@@ -176,7 +176,6 @@ local function getClosestFilteredTarget()
     local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
 
     pcall(function()
-        -- Search both Workspace and Workspace.Camera for zombies
         local searchPool = {}
         for _, obj in pairs(Workspace:GetChildren()) do
             if obj.Name == "m_Zombie" or obj:FindFirstChild("Orig") then
@@ -553,7 +552,6 @@ task.spawn(function()
         end
     end
 end)
-
 --------------------------------------------------
 -- 8. OBSIDIAN UI SETUP
 --------------------------------------------------
@@ -567,7 +565,8 @@ local Window = Library:CreateWindow({
 
 local Tabs = {
     Combat = Window:AddTab("Combat", "swords"),
-    Aimbot = Window:AddTab("ESP", "eye"),
+    Aimbot = Window:AddTab("Aimbot", "crosshair"),
+    ESP = Window:AddTab("ESP", "eye"),
     Antilag = Window:AddTab("Antilag", "zap"),
     ['UI Settings'] = Window:AddTab("UI Settings", "settings"),
 }
