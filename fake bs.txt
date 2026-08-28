@@ -1,0 +1,722 @@
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+
+local successLib, Library = pcall(function()
+    return loadstring(game:HttpGet(repo .. "Library.lua"))()
+end)
+
+local successTM, ThemeManager = pcall(function()
+    return loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+end)
+
+local successSM, SaveManager = pcall(function()
+    return loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+end)
+
+if not successLib or not Library then
+    warn("Tomboy Hub: Failed to load Obsidian Library from GitHub.")
+    return
+end
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
+local Camera = Workspace.CurrentCamera
+
+Library.ShowToggleFrameInKeybinds = true
+
+L = L or {}
+L.tomboyHitterEnabled = false
+L.zombieHitboxEnabled = false
+L.zombieHitboxVisualsEnabled = true
+L.zombieHitboxSize = 10
+L.zombieHitboxTransparencyPercent = 50
+L.zombieHitboxAddedParts = {}
+
+L.removeParticlesEnabled = false
+L.removeHorsesEnabled = false
+
+L.attackSpeedEnabled = false
+L.attackSpeedMultiplier = 1
+
+-- Aimbot Settings
+L.aimbotEnabled = false
+L.aimbotFOV = 300
+L.aimbotTargetPart = "Head"
+L.fovCircleVisible = false
+L.fovCircleFilled = false
+
+-- Target Filters
+L.targetShambler = true
+L.targetRunner = true
+L.targetBomber = true
+L.targetCuirassier = true
+L.targetZapper = true
+L.targetIgniter = true
+
+local hookInstalled = false
+local originalMeleeHitCheck = nil
+local lastZombieHitTime = {}
+local ZOMBIE_HIT_COOLDOWN = 0.1
+
+-- ESP Toggles State
+local espShamblerToggled = false
+local espRToggled = false
+local espBToggled = false
+local espCuToggled = false
+local espZToggled = false
+local espIgniterToggled = false
+
+local fovDrawingCircle = Drawing.new("Circle")
+fovDrawingCircle.Visible = false
+fovDrawingCircle.Transparency = 0.7
+fovDrawingCircle.Thickness = 2
+fovDrawingCircle.Color = Color3.fromRGB(200, 50, 255)
+fovDrawingCircle.NumSides = 64
+fovDrawingCircle.Filled = false
+
+local lockBox = Drawing.new("Square")
+lockBox.Visible = false
+lockBox.Thickness = 2
+lockBox.Color = Color3.fromRGB(0, 255, 100)
+lockBox.Filled = false
+lockBox.Transparency = 0.9
+
+--------------------------------------------------
+-- 1. ATTACK SPEED SYSTEM
+--------------------------------------------------
+local function applyBuffToTool(tool)
+    if not tool:IsA("Tool") then return end
+    local buff = tool:FindFirstChild("SwingSpeedBuff")
+    if L.attackSpeedEnabled then
+        if not buff then
+            buff = Instance.new("NumberValue")
+            buff.Name = "SwingSpeedBuff"
+            buff.Parent = tool
+        end
+        buff.Value = L.attackSpeedMultiplier
+    else
+        if buff then buff:Destroy() end
+    end
+end
+
+function L.updateAllTools()
+    local char = LocalPlayer.Character
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if char then
+        for _, tool in char:GetChildren() do applyBuffToTool(tool) end
+    end
+    if backpack then
+        for _, tool in backpack:GetChildren() do applyBuffToTool(tool) end
+    end
+end
+
+local function setupToolListeners(char)
+    char.ChildAdded:Connect(applyBuffToTool)
+    local backpack = LocalPlayer:WaitForChild("Backpack", 5)
+    if backpack then backpack.ChildAdded:Connect(applyBuffToTool) end
+end
+
+if LocalPlayer.Character then setupToolListeners(LocalPlayer.Character) end
+
+--------------------------------------------------
+-- 2. ROBUST CLASSIFICATION SYSTEM
+--------------------------------------------------
+local function getZombieClassification(child)
+    local name = child.Name:lower()
+    local isBomber = child:FindFirstChild("Barrel") ~= nil or name:find("bomber") or name:find("barrel")
+    local isIgniter = child:FindFirstChild("Lantern") ~= nil or child:FindFirstChild("Torch") ~= nil or name:find("igniter") or name:find("lantern")
+    local isCuirassier = child:FindFirstChild("Sword") ~= nil or name:find("cuirassier") or name:find("sword")
+    local isZapper = child:FindFirstChild("Axe") ~= nil or name:find("zapper") or name:find("axe")
+    
+    local zombieRef = nil
+    local origin = child:FindFirstChild("Orig")
+    if origin and origin.Value then
+        zombieRef = origin.Value
+    end
+
+    local ws = 16
+    if zombieRef and zombieRef:FindFirstChild("Zombie") then
+        ws = zombieRef.Zombie.WalkSpeed or 16
+    elseif child:FindFirstChild("Humanoid") then
+        ws = child.Humanoid.WalkSpeed or 16
+    end
+
+    local isRunner = (ws >= 20) or name:find("runner") or name:find("fast")
+    local isShambler = not (isBomber or isRunner or isIgniter or isCuirassier or isZapper)
+
+    return {
+        shambler = isShambler,
+        runner = isRunner,
+        bomber = isBomber,
+        cuirassier = isCuirassier,
+        zapper = isZapper,
+        igniter = isIgniter
+    }
+end
+
+--------------------------------------------------
+-- 3. AIMBOT UTILITIES & TARGET FINDER
+--------------------------------------------------
+local function isValidZombieType(child)
+    local types = getZombieClassification(child)
+    if types.shambler and L.targetShambler then return true end
+    if types.runner and L.targetRunner then return true end
+    if types.bomber and L.targetBomber then return true end
+    if types.cuirassier and L.targetCuirassier then return true end
+    if types.zapper and L.targetZapper then return true end
+    if types.igniter and L.targetIgniter then return true end
+    return false
+end
+
+local function getClosestFilteredTarget()
+    local closestTarget = nil
+    local shortestDistance = math.huge
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    pcall(function()
+        -- Search both Workspace and Workspace.Camera for zombies
+        local searchPool = {}
+        for _, obj in pairs(Workspace:GetChildren()) do
+            if obj.Name == "m_Zombie" or obj:FindFirstChild("Orig") then
+                table.insert(searchPool, obj)
+            end
+        end
+        if Workspace:FindFirstChild("Camera") then
+            for _, obj in pairs(Workspace.Camera:GetChildren()) do
+                if obj.Name == "m_Zombie" or obj:FindFirstChild("Orig") then
+                    table.insert(searchPool, obj)
+                end
+            end
+        end
+
+        for _, child in pairs(searchPool) do
+            local targetPartName = (L.aimbotTargetPart == "Body") and "HumanoidRootPart" or "Head"
+            local targetPart = child:FindFirstChild(targetPartName) or child:FindFirstChild("Head") or child:FindFirstChild("HumanoidRootPart")
+            
+            if targetPart and isValidZombieType(child) then
+                local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                if onScreen then
+                    local screenVector = Vector2.new(screenPos.X, screenPos.Y)
+                    local distance = (screenVector - screenCenter).Magnitude
+                    if distance < shortestDistance and distance <= L.aimbotFOV then
+                        shortestDistance = distance
+                        closestTarget = targetPart
+                    end
+                end
+            end
+        end
+    end)
+    return closestTarget
+end
+
+RunService.RenderStepped:Connect(function()
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    
+    fovDrawingCircle.Position = screenCenter
+    fovDrawingCircle.Radius = L.aimbotFOV
+    fovDrawingCircle.Visible = L.fovCircleVisible
+    fovDrawingCircle.Filled = L.fovCircleFilled
+
+    if not L.aimbotEnabled then
+        lockBox.Visible = false
+        return
+    end
+    
+    local targetPart = getClosestFilteredTarget()
+    if targetPart then
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
+        local model = targetPart.Parent
+        local _, size = model:GetBoundingBox()
+        local headPos = targetPart.Position
+        local topScreen, topOnScreen = Camera:WorldToViewportPoint(headPos + Vector3.new(0, size.Y / 2, 0))
+        local bottomScreen, bottomOnScreen = Camera:WorldToViewportPoint(headPos - Vector3.new(0, size.Y / 2, 0))
+        
+        if topOnScreen and bottomOnScreen then
+            local height = math.abs(bottomScreen.Y - topScreen.Y)
+            local width = height * 0.6
+            lockBox.Size = Vector2.new(width, height)
+            lockBox.Position = Vector2.new(topScreen.X - width / 2, topScreen.Y)
+            lockBox.Visible = true
+        else
+            lockBox.Visible = false
+        end
+    else
+        lockBox.Visible = false
+    end
+end)
+
+--------------------------------------------------
+-- 4. CLEAN MELEE HOOK
+--------------------------------------------------
+local function getZombieModel(part)
+    if not part then return nil end
+    local model = part.Parent
+    for i = 1, 5 do
+        if not model then break end
+        if model:IsA("Model") and (model.Name == "m_Zombie" or model:FindFirstChild("Orig")) then
+            return model
+        end
+        model = model.Parent
+    end
+    return nil
+end
+
+local function getZombieHead(zombieModel)
+    if not zombieModel then return nil end
+    for _, part in zombieModel:GetChildren() do
+        if part.Name == "Head" and (part:IsA("Part") or part:IsA("MeshPart")) then
+            return part
+        end
+    end
+    return nil
+end
+
+local function unifiedMeleeHitCheck(self, origin, direction, raycastParams, hitEntities, isCharge)
+    local rayResult = workspace:Raycast(origin, direction, raycastParams)
+    if rayResult and L.tomboyHitterEnabled then
+        local hitPart = rayResult.Instance
+        local zombieModel = getZombieModel(hitPart)
+        if zombieModel then
+            local now = tick()
+            if lastZombieHitTime[zombieModel] and now - lastZombieHitTime[zombieModel] < ZOMBIE_HIT_COOLDOWN then
+                return 0
+            end
+            local orig = zombieModel:FindFirstChild("Orig")
+            if orig then
+                local head = getZombieHead(zombieModel)
+                if head then
+                    local zombieRef = orig.Value
+                    local hitPos = head.Position
+                    local partName = "Head"
+                    local char = LocalPlayer.Character
+                    local headPart = char and char:FindFirstChild("Head")
+                    local Direction = headPart and (hitPos - headPart.Position).Unit or Vector3.new(0, 1, 0)
+                    if isCharge then
+                        self.remoteEvent:FireServer("ThrustCharge", zombieRef, hitPos, rayResult.Normal)
+                    else
+                        self.remoteEvent:FireServer("HitZombieM", zombieRef, hitPos, true, hitPos, partName, Direction)
+                    end
+                    lastZombieHitTime[zombieModel] = now
+                    return 1
+                end
+            end
+        end
+    end
+    if originalMeleeHitCheck then
+        return originalMeleeHitCheck(self, origin, direction, raycastParams, hitEntities, isCharge)
+    end
+    return 0
+end
+
+local function installHook()
+    if hookInstalled then return end
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    if not modules then return end
+    local weapons = modules:FindFirstChild("Weapons")
+    if not weapons then return end
+    local success, MeleeBase = pcall(require, weapons:FindFirstChild("MeleeBase"))
+    if not success or not MeleeBase then return end
+    if type(hookfunction) == "function" then
+        if not originalMeleeHitCheck then
+            originalMeleeHitCheck = hookfunction(MeleeBase.MeleeHitCheck, unifiedMeleeHitCheck)
+        else
+            hookfunction(MeleeBase.MeleeHitCheck, unifiedMeleeHitCheck)
+        end
+    else
+        if not originalMeleeHitCheck then
+            originalMeleeHitCheck = MeleeBase.MeleeHitCheck
+        end
+        MeleeBase.MeleeHitCheck = unifiedMeleeHitCheck
+    end
+    hookInstalled = true
+end
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    installHook()
+end)
+
+if LocalPlayer.Character then
+    task.wait(0.5)
+    installHook()
+end
+
+--------------------------------------------------
+-- 5. HITBOX MANAGER
+--------------------------------------------------
+local function getCurrentTransparency()
+    if not L.zombieHitboxVisualsEnabled then return 1 end
+    return L.zombieHitboxTransparencyPercent / 100
+end
+
+local function getHitboxFolder()
+    local folder = workspace:FindFirstChild("TomboyHitboxFolder")
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = "TomboyHitboxFolder"
+        folder.Parent = workspace
+    end
+    return folder
+end
+
+local function addHitboxesToZombie(zombie)
+    if not L.zombieHitboxEnabled then return end
+    if L.zombieHitboxAddedParts[zombie] then return end
+    local hrp = zombie:FindFirstChild("HumanoidRootPart")
+    local head = zombie:FindFirstChild("Head")
+    if not hrp or not head then return end
+
+    local currentTrans = getCurrentTransparency()
+    local folder = getHitboxFolder()
+
+    local outer = Instance.new("Part")
+    outer.Name = "ZombieHitbox_Outer"
+    outer.Size = Vector3.new(L.zombieHitboxSize, L.zombieHitboxSize, L.zombieHitboxSize)
+    outer.Transparency = currentTrans
+    outer.Color = Color3.fromRGB(160, 32, 240)
+    outer.Material = Enum.Material.Neon
+    outer.CanCollide = false
+    outer.CanTouch = true
+    outer.Massless = true
+    outer.Anchored = false
+    outer.CFrame = hrp.CFrame
+    outer.Parent = folder
+
+    local weldOuter = Instance.new("WeldConstraint")
+    weldOuter.Part0 = hrp
+    weldOuter.Part1 = outer
+    weldOuter.Parent = outer
+
+    local headBox = Instance.new("Part")
+    headBox.Name = "ZombieHitbox_Head"
+    headBox.Size = Vector3.new(L.zombieHitboxSize/2, L.zombieHitboxSize/2, L.zombieHitboxSize/2)
+    headBox.Transparency = currentTrans
+    headBox.Color = Color3.fromRGB(200, 50, 255)
+    headBox.Material = Enum.Material.Neon
+    headBox.CanCollide = false
+    headBox.CanTouch = true
+    headBox.Massless = true
+    headBox.Anchored = false
+    headBox.CFrame = head.CFrame
+    headBox.Parent = folder
+
+    local weldHead = Instance.new("WeldConstraint")
+    weldHead.Part0 = head
+    weldHead.Part1 = headBox
+    weldHead.Parent = headBox
+
+    L.zombieHitboxAddedParts[zombie] = { outer = outer, head = headBox }
+end
+
+local function removeHitboxesFromZombie(zombie)
+    local parts = L.zombieHitboxAddedParts[zombie]
+    if parts then
+        if parts.outer then parts.outer:Destroy() end
+        if parts.head then parts.head:Destroy() end
+        L.zombieHitboxAddedParts[zombie] = nil
+    end
+end
+
+local function refreshZombieHitboxes()
+    local allZombies = {}
+    local cameraFolder = workspace:FindFirstChild("Camera")
+    if cameraFolder then
+        for _, z in cameraFolder:GetChildren() do
+            if z:IsA("Model") and (z.Name == "m_Zombie" or z:FindFirstChild("Orig")) then
+                table.insert(allZombies, z)
+            end
+        end
+    end
+
+    local toRemove = {}
+    for zombie, _ in L.zombieHitboxAddedParts do
+        local stillExists = false
+        for _, z in allZombies do
+            if z == zombie then stillExists = true; break end
+        end
+        if not stillExists then table.insert(toRemove, zombie) end
+    end
+    for _, zombie in toRemove do removeHitboxesFromZombie(zombie) end
+
+    if not L.zombieHitboxEnabled then
+        for zombie, _ in L.zombieHitboxAddedParts do removeHitboxesFromZombie(zombie) end
+        L.zombieHitboxAddedParts = {}
+        local folder = workspace:FindFirstChild("TomboyHitboxFolder")
+        if folder then folder:ClearAllChildren() end
+    else
+        for _, z in allZombies do
+            if not L.zombieHitboxAddedParts[z] then addHitboxesToZombie(z) end
+        end
+    end
+end
+
+local function updateAllZombieHitboxVisuals()
+    local currentTrans = getCurrentTransparency()
+    for _, parts in L.zombieHitboxAddedParts do
+        if parts.outer and parts.outer.Parent then
+            parts.outer.Size = Vector3.new(L.zombieHitboxSize, L.zombieHitboxSize, L.zombieHitboxSize)
+            parts.outer.Transparency = currentTrans
+        end
+        if parts.head and parts.head.Parent then
+            parts.head.Size = Vector3.new(L.zombieHitboxSize/2, L.zombieHitboxSize/2, L.zombieHitboxSize/2)
+            parts.head.Transparency = currentTrans
+        end
+    end
+end
+
+--------------------------------------------------
+-- 6. ESP SYSTEM
+--------------------------------------------------
+local function ensureHighlight(target, fillColor)
+    if not target or not target.Parent then return end
+    if target:FindFirstChild("ESP_Highlight") then return end
+
+    local h = Instance.new("Highlight")
+    h.Name = "ESP_Highlight"
+    h.Adornee = target
+    h.Parent = target
+    h.FillColor = fillColor or Color3.fromRGB(255,255,255)
+    h.OutlineColor = Color3.fromRGB(255,255,255)
+end
+
+local function removeHighlight(target)
+    if not target then return end
+    local h = target:FindFirstChild("ESP_Highlight")
+    if h then h:Destroy() end
+end
+
+local function scanAndApply()
+    pcall(function()
+        for _, child in pairs(Workspace.Camera:GetChildren()) do
+            if child.Name == "m_Zombie" then
+                local types = getZombieClassification(child)
+                local highlighted = false
+
+                if espShamblerToggled and types.shambler then
+                    ensureHighlight(child, Color3.fromRGB(200, 200, 200))
+                    highlighted = true
+                elseif espRToggled and types.runner then
+                    ensureHighlight(child, Color3.fromRGB(255, 0, 0))
+                    highlighted = true
+                elseif espBToggled and types.bomber then
+                    ensureHighlight(child, Color3.fromRGB(255, 140, 0))
+                    highlighted = true
+                elseif espCuToggled and types.cuirassier then
+                    ensureHighlight(child, Color3.fromRGB(0, 100, 255))
+                    highlighted = true
+                elseif espZToggled and types.zapper then
+                    ensureHighlight(child, Color3.fromRGB(255, 183, 197))
+                    highlighted = true
+                elseif espIgniterToggled and types.igniter then
+                    ensureHighlight(child, Color3.fromRGB(255, 69, 0))
+                    highlighted = true
+                end
+
+                if not highlighted then
+                    removeHighlight(child)
+                end
+            end
+        end
+    end)
+end
+
+Workspace.Camera.ChildAdded:Connect(function(child)
+    if child.Name == "m_Zombie" then
+        task.wait(0.1)
+        scanAndApply()
+    end
+end)
+
+RunService.Heartbeat:Connect(scanAndApply)
+
+--------------------------------------------------
+-- 7. ANTILAG LOOP
+--------------------------------------------------
+task.spawn(function()
+    while true do
+        task.wait(1)
+        refreshZombieHitboxes()
+        if L.removeParticlesEnabled then
+            for _, desc in pairs(workspace:GetDescendants()) do
+                if desc:IsA("ParticleEmitter") or desc:IsA("Fire") or desc:IsA("Smoke") or desc:IsA("Sparkles") then desc:Destroy() end
+            end
+        end
+        if L.removeHorsesEnabled then
+            for _, obj in pairs(workspace:GetDescendants()) do
+                if obj:IsA("Model") or obj:IsA("BasePart") then
+                    local name = obj.Name:lower()
+                    if name:find("horse") or name:find("cavalry") or name:find("pony") then obj:Destroy() end
+                end
+            end
+        end
+    end
+end)
+
+--------------------------------------------------
+-- 8. OBSIDIAN UI SETUP
+--------------------------------------------------
+local Window = Library:CreateWindow({
+    Title = "Tomboy Hub",
+    Footer = "Obsidian UI",
+    Icon = 0000000000,
+    NotifySide = "Right",
+    ShowCustomCursor = false,
+})
+
+local Tabs = {
+    Combat = Window:AddTab("Combat", "swords"),
+    Aimbot = Window:AddTab("ESP", "eye"),
+    Antilag = Window:AddTab("Antilag", "zap"),
+    ['UI Settings'] = Window:AddTab("UI Settings", "settings"),
+}
+
+local CombatBox = Tabs.Combat:AddLeftGroupbox("Combat Enhancements")
+local HitboxBox = Tabs.Combat:AddRightGroupbox("Zombie Hitboxes")
+
+local AimbotMainBox = Tabs.Aimbot:AddLeftGroupbox("Aimbot General Settings")
+local TargetFilterBox = Tabs.Aimbot:AddRightGroupbox("Aimbot Target Filters")
+
+local ESPBox = Tabs.ESP:AddLeftGroupbox("Zombie ESP Highlights")
+local AntilagBox = Tabs.Antilag:AddLeftGroupbox("Performance Optimizations")
+
+CombatBox:AddToggle('Tomboyhitter', {
+    Text = 'Tomboyhitter',
+    Default = false,
+    Tooltip = 'its in the name you dummy',
+    Callback = function(Value) L.tomboyHitterEnabled = Value end
+})
+
+CombatBox:AddToggle('SpeedToggle', {
+    Text = 'Tomboy Speed',
+    Default = false,
+    Tooltip = 'Attack speed adjust.',
+    Callback = function(Value)
+        L.attackSpeedEnabled = Value
+        L.updateAllTools()
+    end
+})
+
+CombatBox:AddSlider('SpeedSlider', {
+    Text = 'Tomboy Speed Multiplier',
+    Default = 1.0, Min = 0.5, Max = 10.0, Suffix = 'x', Rounding = 1,
+    Callback = function(Value)
+        L.attackSpeedMultiplier = Value
+        if L.attackSpeedEnabled then L.updateAllTools() end
+    end
+})
+
+AimbotMainBox:AddToggle('AimbotToggle', {
+    Text = 'Enable AIMBOT',
+    Default = false,
+    Callback = function(Value) L.aimbotEnabled = Value end
+})
+
+AimbotMainBox:AddDropdown('AimbotTargetPart', {
+    Text = 'Aim Target Part',
+    Values = {'Head', 'Body'},
+    Default = 1,
+    Callback = function(Value) L.aimbotTargetPart = Value end
+})
+
+AimbotMainBox:AddToggle('FOVCircleToggle', {
+    Text = 'Show FOV Circle',
+    Default = false,
+    Callback = function(Value) L.fovCircleVisible = Value end
+})
+
+AimbotMainBox:AddSlider('AimbotFOV', {
+    Text = 'Target Range FOV Size',
+    Default = 300, Min = 50, Max = 600, Suffix = ' px', Rounding = 0,
+    Callback = function(Value) L.aimbotFOV = Value end
+})
+
+TargetFilterBox:AddToggle('TargetShambler', { Text = 'aim Shambler', Default = true, Callback = function(Value) L.targetShambler = Value end })
+TargetFilterBox:AddToggle('TargetRunner', { Text = 'aim Runner', Default = true, Callback = function(Value) L.targetRunner = Value end })
+TargetFilterBox:AddToggle('TargetBomber', { Text = 'aim Bomber', Default = true, Callback = function(Value) L.targetBomber = Value end })
+TargetFilterBox:AddToggle('TargetCuirassier', { Text = 'aim Cuirassier', Default = true, Callback = function(Value) L.targetCuirassier = Value end })
+TargetFilterBox:AddToggle('TargetZapper', { Text = 'aim Zapper', Default = true, Callback = function(Value) L.targetZapper = Value end })
+TargetFilterBox:AddToggle('TargetIgniter', { Text = 'aim Igniter', Default = true, Callback = function(Value) L.targetIgniter = Value end })
+
+HitboxBox:AddToggle('HitboxToggle', {
+    Text = 'Enable Hitbox Expander',
+    Default = false,
+    Callback = function(Value)
+        L.zombieHitboxEnabled = Value
+        refreshZombieHitboxes()
+    end
+})
+
+HitboxBox:AddToggle('HitboxVisualsToggle', {
+    Text = 'Enable Hitbox Visuals',
+    Default = true,
+    Callback = function(Value)
+        L.zombieHitboxVisualsEnabled = Value
+        updateAllZombieHitboxVisuals()
+    end
+})
+
+HitboxBox:AddSlider('HitboxSizeSlider', {
+    Text = 'Hitbox Size',
+    Default = 10, Min = 2, Max = 30, Suffix = ' studs', Rounding = 0,
+    Callback = function(Value)
+        L.zombieHitboxSize = Value
+        updateAllZombieHitboxVisuals()
+    end
+})
+
+HitboxBox:AddSlider('HitboxTransSlider', {
+    Text = 'Hitbox Transparency',
+    Default = 50, Min = 0, Max = 100, Suffix = '%', Rounding = 0,
+    Callback = function(Value)
+        L.zombieHitboxTransparencyPercent = Value
+        updateAllZombieHitboxVisuals()
+    end
+})
+
+ESPBox:AddToggle('ESPShamblerToggle', { Text = 'ESP Shambler', Default = false, Callback = function(Value) espShamblerToggled = Value; scanAndApply() end })
+ESPBox:AddToggle('ESPRunnerToggle', { Text = 'ESP Runner (Fast)', Default = false, Callback = function(Value) espRToggled = Value; scanAndApply() end })
+ESPBox:AddToggle('ESPBomberToggle', { Text = 'ESP Bomber', Default = false, Callback = function(Value) espBToggled = Value; scanAndApply() end })
+ESPBox:AddToggle('ESPCuirassToggle', { Text = 'ESP Cuirassier', Default = false, Callback = function(Value) espCuToggled = Value; scanAndApply() end })
+ESPBox:AddToggle('ESPZapperToggle', { Text = 'ESP Zapper', Default = false, Callback = function(Value) espZToggled = Value; scanAndApply() end })
+ESPBox:AddToggle('ESPIgniterToggle', { Text = 'ESP Igniter', Default = false, Callback = function(Value) espIgniterToggled = Value; scanAndApply() end })
+
+AntilagBox:AddToggle('RemoveParticlesTest', {
+    Text = 'Removes Particles',
+    Default = false,
+    Tooltip = 'Deletes particle emitters, fire, and smoke effects for FPS boost.',
+    Callback = function(Value) L.removeParticlesEnabled = Value end
+})
+
+AntilagBox:AddToggle('RemoveHorsesToggle', {
+    Text = 'Removes Horses (Westminster/Catacombs)',
+    Default = false,
+    Tooltip = 'Cleans up horse models and related map heavy entities.',
+    Callback = function(Value) L.removeHorsesEnabled = Value end
+})
+
+local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu Settings')
+MenuGroup:AddButton('destroy thou script', function() 
+    local folder = workspace:FindFirstChild("TomboyHitboxFolder")
+    if folder then folder:Destroy() end
+    fovDrawingCircle:Remove()
+    lockBox:Remove()
+    Library:Unload() 
+end)
+
+if successTM and ThemeManager then
+    ThemeManager:SetLibrary(Library)
+    ThemeManager:SetFolder("TomboyHubConfigs")
+    ThemeManager:ApplyToTab(Tabs['UI Settings'])
+end
+
+if successSM and SaveManager then
+    SaveManager:SetLibrary(Library)
+    SaveManager:IgnoreThemeSettings()
+    SaveManager:SetFolder("TomboyHubConfigs")
+    SaveManager:BuildConfigSection(Tabs['UI Settings'])
+    SaveManager:LoadAutoloadConfig()
+end
+
+print("tomboy hub loaded successfully with tomboys!")
