@@ -63,6 +63,14 @@ L.targetCuirassier = true
 L.targetZapper = true
 L.targetIgniter = true
 
+-- ESP Toggles Global Reference
+getgenv().espShamblerToggled = false
+getgenv().espRToggled = false
+getgenv().espBToggled = false
+getgenv().espCuToggled = false
+getgenv().espZToggled = false
+getgenv().espIgniterToggled = false
+
 local hookInstalled = false
 local originalMeleeHitCheck = nil
 local lastZombieHitTime = {}
@@ -85,7 +93,7 @@ lockBox.Filled = false
 lockBox.Transparency = 0.9
 
 --------------------------------------------------
--- 1. ATTACK SPEED SYSTEM
+-- ATTACK SPEED SYSTEM
 --------------------------------------------------
 local function applyBuffToTool(tool)
     if not tool:IsA("Tool") then return end
@@ -122,7 +130,7 @@ end
 if LocalPlayer.Character then setupToolListeners(LocalPlayer.Character) end
 
 --------------------------------------------------
--- 2. ROBUST CLASSIFICATION & MODEL HELPERS
+-- ROBUST CLASSIFICATION & MODEL HELPERS
 --------------------------------------------------
 local function getZombieClassification(child)
     local name = child.Name:lower()
@@ -158,7 +166,7 @@ local function getZombieClassification(child)
 end
 
 --------------------------------------------------
--- 3. AIMBOT UTILITIES & MULTI-POINT WALL CHECK
+-- AIMBOT UTILITIES & PIERCING WALL CHECK
 --------------------------------------------------
 local function isValidZombieType(child)
     local types = getZombieClassification(child)
@@ -206,29 +214,67 @@ local function isVisibleThroughWalls(targetPart, zombieModel)
     local samples = getWallCheckSamplePositions(targetPart)
     local origin = Camera.CFrame.Position
     
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.IgnoreWater = true
+    local baseParams = RaycastParams.new()
+    baseParams.FilterType = Enum.RaycastFilterType.Exclude
+    baseParams.IgnoreWater = true
     
-    local ignoreList = {}
-    if LocalPlayer.Character then table.insert(ignoreList, LocalPlayer.Character) end
+    local globalIgnore = {}
+    if LocalPlayer.Character then table.insert(globalIgnore, LocalPlayer.Character) end
     for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then table.insert(ignoreList, player.Character) end
+        if player.Character then table.insert(globalIgnore, player.Character) end
     end
     
     local zombiesFolder = Workspace:FindFirstChild("Zombies")
-    if zombiesFolder then table.insert(ignoreList, zombiesFolder) end
+    if zombiesFolder then table.insert(globalIgnore, zombiesFolder) end
     
     local cameraFolder = Workspace:FindFirstChild("Camera")
-    if cameraFolder then table.insert(ignoreList, cameraFolder) end
+    if cameraFolder then table.insert(globalIgnore, cameraFolder) end
     
-    if zombieModel then table.insert(ignoreList, zombieModel) end
-    params.FilterDescendantsInstances = ignoreList
-    
+    if zombieModel then table.insert(globalIgnore, zombieModel) end
+
+    local function isPenetrable(part)
+        if not part then return false end
+        local name = part.Name:lower()
+        if part.Transparency >= 0.95 or name:find("invisible") or name:find("barrier") or name:find("glass") or name:find("fence") or name:find("grate") then
+            return true
+        end
+        return false
+    end
+
     for _, samplePos in ipairs(samples) do
-        local direction = samplePos - origin
-        local result = Workspace:Raycast(origin, direction, params)
-        if not result or (zombieModel and result.Instance:IsDescendantOf(zombieModel)) then
+        local currentOrigin = origin
+        local currentDir = samplePos - origin
+        local hitTarget = false
+        
+        local currentIgnore = {}
+        for _, v in ipairs(globalIgnore) do table.insert(currentIgnore, v) end
+        
+        local maxPenetrations = 5
+        for i = 1, maxPenetrations do
+            baseParams.FilterDescendantsInstances = currentIgnore
+            local result = Workspace:Raycast(currentOrigin, currentDir, baseParams)
+            
+            if not result then
+                hitTarget = true
+                break
+            elseif zombieModel and result.Instance:IsDescendantOf(zombieModel) then
+                hitTarget = true
+                break
+            elseif isPenetrable(result.Instance) then
+                table.insert(currentIgnore, result.Instance)
+                local hitPos = result.Position
+                currentDir = samplePos - hitPos
+                currentOrigin = hitPos + (currentDir.Unit * 0.1)
+                if currentDir.Magnitude <= 0 then
+                    hitTarget = true
+                    break
+                end
+            else
+                break
+            end
+        end
+        
+        if hitTarget then
             return true
         end
     end
@@ -330,7 +376,7 @@ RunService.RenderStepped:Connect(function()
 end)
 
 --------------------------------------------------
--- 4. CLEAN MELEE HOOK
+-- CLEAN MELEE HOOK
 --------------------------------------------------
 local function getZombieModel(part)
     if not part then return nil end
@@ -425,7 +471,7 @@ if LocalPlayer.Character then
     installHook()
 end
 --------------------------------------------------
--- 5. HITBOX MANAGER
+-- HITBOX MANAGER
 --------------------------------------------------
 local function getCurrentTransparency()
     if not L.zombieHitboxVisualsEnabled then return 1 end
@@ -580,7 +626,7 @@ if cameraFolder then
 end
 
 --------------------------------------------------
--- 6. ESP SYSTEM (FIXED DYNAMIC RE-CHECK & EXACT COLORS)
+-- ESP SYSTEM
 --------------------------------------------------
 local function ensureHighlight(target, fillColor, outlineColor)
     if not target or not target.Parent then return end
@@ -644,7 +690,7 @@ end
 RunService.Heartbeat:Connect(scanAndApply)
 
 --------------------------------------------------
--- 7. ANTILAG LOOP & HITBOX REFRESH
+-- ANTILAG LOOP & HITBOX REFRESH
 --------------------------------------------------
 task.spawn(function()
     while true do
@@ -669,7 +715,7 @@ task.spawn(function()
 end)
 
 --------------------------------------------------
--- 8. OBSIDIAN UI SETUP
+-- OBSIDIAN UI SETUP
 --------------------------------------------------
 local Window = Library:CreateWindow({
     Title = "Tomboy Hub",
