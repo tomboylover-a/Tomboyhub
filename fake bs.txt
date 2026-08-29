@@ -48,6 +48,13 @@ L.aimbotMaxRange = 500
 L.fovCircleVisible = false
 L.fovCircleFilled = false
 
+-- Wall Check Settings
+L.customWallCheckEnabled = true
+local v3new = Vector3.new
+local WALL_CHECK_SAMPLE_AXIS_SCALE = 0.4
+local WALL_CHECK_MIN_SAMPLE_OFFSET = 0.5
+local WALL_CHECK_MAX_SAMPLE_OFFSET = 3.0
+
 -- Target Filters
 L.targetShambler = true
 L.targetRunner = true
@@ -61,14 +68,6 @@ local originalMeleeHitCheck = nil
 local lastZombieHitTime = {}
 local ZOMBIE_HIT_COOLDOWN = 0.1
 local currentLockedTarget = nil
-
--- ESP Toggles State
-local espShamblerToggled = false
-local espRToggled = false
-local espBToggled = false
-local espCuToggled = false
-local espZToggled = false
-local espIgniterToggled = false
 
 local fovDrawingCircle = Drawing.new("Circle")
 fovDrawingCircle.Visible = false
@@ -159,7 +158,7 @@ local function getZombieClassification(child)
 end
 
 --------------------------------------------------
--- 3. AIMBOT UTILITIES & FAST NATIVE WALL CHECK
+-- 3. AIMBOT UTILITIES & MULTI-POINT WALL CHECK
 --------------------------------------------------
 local function isValidZombieType(child)
     local types = getZombieClassification(child)
@@ -172,34 +171,67 @@ local function isValidZombieType(child)
     return false
 end
 
+local function getWallCheckSamplePositions(part, aimPosOverride)
+    if not part or not part.Parent then return {} end
+    local basePos = aimPosOverride or part.Position
+    local cf = part.CFrame
+    local size = part.Size or v3new(1,1,1)
+    local function axisOffset(comp)
+        local scaled = comp * WALL_CHECK_SAMPLE_AXIS_SCALE
+        if scaled < WALL_CHECK_MIN_SAMPLE_OFFSET then scaled = WALL_CHECK_MIN_SAMPLE_OFFSET end
+        if scaled > WALL_CHECK_MAX_SAMPLE_OFFSET then scaled = WALL_CHECK_MAX_SAMPLE_OFFSET end
+        return scaled
+    end
+    local xOff = axisOffset(size.X)
+    local yOff = axisOffset(size.Y)
+    local zOff = axisOffset(size.Z)
+    local offsets = {
+        v3new(0,0,0),
+        v3new(0, yOff, 0),
+        v3new(0, -yOff, 0),
+        v3new(xOff, 0, 0),
+        v3new(-xOff, 0, 0),
+        v3new(0, 0, zOff),
+        v3new(0, 0, -zOff)
+    }
+    local samples = {}
+    for _, offset in ipairs(offsets) do
+        samples[#samples+1] = basePos + cf:VectorToWorldSpace(offset)
+    end
+    return samples
+end
+
 local function isVisibleThroughWalls(targetPart, zombieModel)
+    if not L.customWallCheckEnabled then return true end
+    local samples = getWallCheckSamplePositions(targetPart)
     local origin = Camera.CFrame.Position
-    local targetPos = targetPart.Position
-    local direction = targetPos - origin
-    local distance = direction.Magnitude
     
-    if distance < 2 then return true end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.IgnoreWater = true
     
-    local excludeList = {}
-    if LocalPlayer.Character then table.insert(excludeList, LocalPlayer.Character) end
+    local ignoreList = {}
+    if LocalPlayer.Character then table.insert(ignoreList, LocalPlayer.Character) end
     for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then table.insert(excludeList, player.Character) end
+        if player.Character then table.insert(ignoreList, player.Character) end
     end
     
     local zombiesFolder = Workspace:FindFirstChild("Zombies")
-    if zombiesFolder then table.insert(excludeList, zombiesFolder) end
+    if zombiesFolder then table.insert(ignoreList, zombiesFolder) end
     
     local cameraFolder = Workspace:FindFirstChild("Camera")
-    if cameraFolder then table.insert(excludeList, cameraFolder) end
+    if cameraFolder then table.insert(ignoreList, cameraFolder) end
     
-    local raycastParams = RaycastParams.new()
-    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-    raycastParams.FilterDescendantsInstances = excludeList
-    raycastParams.IgnoreWater = true
+    if zombieModel then table.insert(ignoreList, zombieModel) end
+    params.FilterDescendantsInstances = ignoreList
     
-    local result = Workspace:Raycast(origin, direction, raycastParams)
-    if not result then return true end
-    if zombieModel and result.Instance:IsDescendantOf(zombieModel) then return true end
+    for _, samplePos in ipairs(samples) do
+        local direction = samplePos - origin
+        local result = Workspace:Raycast(origin, direction, params)
+        if not result or (zombieModel and result.Instance:IsDescendantOf(zombieModel)) then
+            return true
+        end
+    end
     
     return false
 end
