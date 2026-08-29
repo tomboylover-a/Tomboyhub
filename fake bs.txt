@@ -44,6 +44,7 @@ L.attackSpeedMultiplier = 1
 L.aimbotEnabled = false
 L.aimbotFOV = 300
 L.aimbotTargetPart = "Head"
+L.aimbotMaxRange = 500
 L.fovCircleVisible = false
 L.fovCircleFilled = false
 
@@ -157,7 +158,7 @@ local function getZombieClassification(child)
 end
 
 --------------------------------------------------
--- 3. AIMBOT UTILITIES & TARGET FINDER
+-- 3. AIMBOT UTILITIES & BUILT-IN WALL CHECK
 --------------------------------------------------
 local function isValidZombieType(child)
     local types = getZombieClassification(child)
@@ -168,6 +169,48 @@ local function isValidZombieType(child)
     if types.zapper and L.targetZapper then return true end
     if types.igniter and L.targetIgniter then return true end
     return false
+end
+
+local function isVisibleThroughWalls(targetPart, zombieModel)
+    local origin = Camera.CFrame.Position
+    local targetPos = targetPart.Position
+    local toTarget = targetPos - origin
+    local distance = toTarget.Magnitude
+    
+    if distance < 2 then return true end
+    
+    local direction = toTarget.Unit * math.max(0, distance - 2)
+    
+    local excludeList = {LocalPlayer.Character, zombieModel}
+    local hitboxFolder = Workspace:FindFirstChild("TomboyHitboxFolder")
+    if hitboxFolder then
+        table.insert(excludeList, hitboxFolder)
+    end
+    
+    for _, obj in pairs(Workspace:GetChildren()) do
+        if (obj.Name == "m_Zombie" or obj:FindFirstChild("Orig")) and obj ~= zombieModel then
+            table.insert(excludeList, obj)
+        end
+    end
+    if Workspace:FindFirstChild("Camera") then
+        for _, obj in pairs(Workspace.Camera:GetChildren()) do
+            if (obj.Name == "m_Zombie" or obj:FindFirstChild("Orig")) and obj ~= zombieModel then
+                table.insert(excludeList, obj)
+            end
+        end
+    end
+    
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    raycastParams.FilterDescendantsInstances = excludeList
+    raycastParams.IgnoreWater = true
+    
+    local result = Workspace:Raycast(origin, direction, raycastParams)
+    if result then
+        return false -- Hit a wall or environmental obstacle
+    else
+        return true -- Clear line of sight
+    end
 end
 
 local function getClosestFilteredTarget()
@@ -195,13 +238,16 @@ local function getClosestFilteredTarget()
             local targetPart = child:FindFirstChild(targetPartName) or child:FindFirstChild("Head") or child:FindFirstChild("HumanoidRootPart")
             
             if targetPart and isValidZombieType(child) then
-                local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
-                if onScreen then
-                    local screenVector = Vector2.new(screenPos.X, screenPos.Y)
-                    local distance = (screenVector - screenCenter).Magnitude
-                    if distance < shortestDistance and distance <= L.aimbotFOV then
-                        shortestDistance = distance
-                        closestTarget = targetPart
+                local worldDist = (targetPart.Position - Camera.CFrame.Position).Magnitude
+                if worldDist <= L.aimbotMaxRange and isVisibleThroughWalls(targetPart, child) then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                    if onScreen then
+                        local screenVector = Vector2.new(screenPos.X, screenPos.Y)
+                        local distance = (screenVector - screenCenter).Magnitude
+                        if distance < shortestDistance and distance <= L.aimbotFOV then
+                            shortestDistance = distance
+                            closestTarget = targetPart
+                        end
                     end
                 end
             end
@@ -341,7 +387,6 @@ if LocalPlayer.Character then
     task.wait(0.5)
     installHook()
 end
-
 --------------------------------------------------
 -- 5. HITBOX MANAGER
 --------------------------------------------------
@@ -552,6 +597,7 @@ task.spawn(function()
         end
     end
 end)
+
 --------------------------------------------------
 -- 8. OBSIDIAN UI SETUP
 --------------------------------------------------
@@ -617,6 +663,12 @@ AimbotMainBox:AddDropdown('AimbotTargetPart', {
     Values = {'Head', 'Body'},
     Default = 1,
     Callback = function(Value) L.aimbotTargetPart = Value end
+})
+
+AimbotMainBox:AddSlider('AimbotMaxRange', {
+    Text = 'Max Weapon Range',
+    Default = 500, Min = 50, Max = 2000, Suffix = ' studs', Rounding = 0,
+    Callback = function(Value) L.aimbotMaxRange = Value end
 })
 
 AimbotMainBox:AddToggle('FOVCircleToggle', {
