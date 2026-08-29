@@ -60,6 +60,7 @@ local hookInstalled = false
 local originalMeleeHitCheck = nil
 local lastZombieHitTime = {}
 local ZOMBIE_HIT_COOLDOWN = 0.1
+local currentLockedTarget = nil
 
 -- ESP Toggles State
 local espShamblerToggled = false
@@ -122,7 +123,7 @@ end
 if LocalPlayer.Character then setupToolListeners(LocalPlayer.Character) end
 
 --------------------------------------------------
--- 2. ROBUST CLASSIFICATION SYSTEM
+-- 2. ROBUST CLASSIFICATION & MODEL HELPERS
 --------------------------------------------------
 local function getZombieClassification(child)
     local name = child.Name:lower()
@@ -158,7 +159,7 @@ local function getZombieClassification(child)
 end
 
 --------------------------------------------------
--- 3. AIMBOT UTILITIES & BUILT-IN WALL CHECK
+-- 3. AIMBOT UTILITIES & FAST NATIVE WALL CHECK
 --------------------------------------------------
 local function isValidZombieType(child)
     local types = getZombieClassification(child)
@@ -174,31 +175,22 @@ end
 local function isVisibleThroughWalls(targetPart, zombieModel)
     local origin = Camera.CFrame.Position
     local targetPos = targetPart.Position
-    local toTarget = targetPos - origin
-    local distance = toTarget.Magnitude
+    local direction = targetPos - origin
+    local distance = direction.Magnitude
     
     if distance < 2 then return true end
     
-    local direction = toTarget.Unit * math.max(0, distance - 2)
-    
-    local excludeList = {LocalPlayer.Character, zombieModel}
-    local hitboxFolder = Workspace:FindFirstChild("TomboyHitboxFolder")
-    if hitboxFolder then
-        table.insert(excludeList, hitboxFolder)
+    local excludeList = {}
+    if LocalPlayer.Character then table.insert(excludeList, LocalPlayer.Character) end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character then table.insert(excludeList, player.Character) end
     end
     
-    for _, obj in pairs(Workspace:GetChildren()) do
-        if (obj.Name == "m_Zombie" or obj:FindFirstChild("Orig")) and obj ~= zombieModel then
-            table.insert(excludeList, obj)
-        end
-    end
-    if Workspace:FindFirstChild("Camera") then
-        for _, obj in pairs(Workspace.Camera:GetChildren()) do
-            if (obj.Name == "m_Zombie" or obj:FindFirstChild("Orig")) and obj ~= zombieModel then
-                table.insert(excludeList, obj)
-            end
-        end
-    end
+    local zombiesFolder = Workspace:FindFirstChild("Zombies")
+    if zombiesFolder then table.insert(excludeList, zombiesFolder) end
+    
+    local cameraFolder = Workspace:FindFirstChild("Camera")
+    if cameraFolder then table.insert(excludeList, cameraFolder) end
     
     local raycastParams = RaycastParams.new()
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -206,53 +198,64 @@ local function isVisibleThroughWalls(targetPart, zombieModel)
     raycastParams.IgnoreWater = true
     
     local result = Workspace:Raycast(origin, direction, raycastParams)
-    if result then
-        return false -- Hit a wall or environmental obstacle
-    else
-        return true -- Clear line of sight
-    end
+    if not result then return true end
+    if zombieModel and result.Instance:IsDescendantOf(zombieModel) then return true end
+    
+    return false
 end
 
 local function getClosestFilteredTarget()
+    if currentLockedTarget and currentLockedTarget.Parent then
+        local zombieModel = currentLockedTarget.Parent
+        if zombieModel and zombieModel.Parent and isValidZombieType(zombieModel) then
+            local worldDist = (currentLockedTarget.Position - Camera.CFrame.Position).Magnitude
+            if worldDist <= L.aimbotMaxRange and isVisibleThroughWalls(currentLockedTarget, zombieModel) then
+                local screenPos, onScreen = Camera:WorldToViewportPoint(currentLockedTarget.Position)
+                if onScreen then
+                    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                    local distance = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+                    if distance <= (L.aimbotFOV * 1.5) then
+                        return currentLockedTarget
+                    end
+                end
+            end
+        end
+    end
+
     local closestTarget = nil
     local shortestDistance = math.huge
     local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
 
     pcall(function()
-        local searchPool = {}
-        for _, obj in pairs(Workspace:GetChildren()) do
-            if obj.Name == "m_Zombie" or obj:FindFirstChild("Orig") then
-                table.insert(searchPool, obj)
-            end
-        end
-        if Workspace:FindFirstChild("Camera") then
-            for _, obj in pairs(Workspace.Camera:GetChildren()) do
-                if obj.Name == "m_Zombie" or obj:FindFirstChild("Orig") then
-                    table.insert(searchPool, obj)
-                end
-            end
-        end
-
-        for _, child in pairs(searchPool) do
-            local targetPartName = (L.aimbotTargetPart == "Body") and "HumanoidRootPart" or "Head"
-            local targetPart = child:FindFirstChild(targetPartName) or child:FindFirstChild("Head") or child:FindFirstChild("HumanoidRootPart")
-            
-            if targetPart and isValidZombieType(child) then
-                local worldDist = (targetPart.Position - Camera.CFrame.Position).Magnitude
-                if worldDist <= L.aimbotMaxRange and isVisibleThroughWalls(targetPart, child) then
-                    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
-                    if onScreen then
-                        local screenVector = Vector2.new(screenPos.X, screenPos.Y)
-                        local distance = (screenVector - screenCenter).Magnitude
-                        if distance < shortestDistance and distance <= L.aimbotFOV then
-                            shortestDistance = distance
-                            closestTarget = targetPart
+        local function scanFolder(folder)
+            if not folder then return end
+            for _, child in pairs(folder:GetChildren()) do
+                if child:IsA("Model") and (child.Name == "m_Zombie" or child:FindFirstChild("Orig") or child:FindFirstChild("Humanoid")) then
+                    local targetPartName = (L.aimbotTargetPart == "Body") and "HumanoidRootPart" or "Head"
+                    local targetPart = child:FindFirstChild(targetPartName) or child:FindFirstChild("Head") or child:FindFirstChild("HumanoidRootPart")
+                    
+                    if targetPart and isValidZombieType(child) then
+                        local worldDist = (targetPart.Position - Camera.CFrame.Position).Magnitude
+                        if worldDist <= L.aimbotMaxRange and isVisibleThroughWalls(targetPart, child) then
+                            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                            if onScreen then
+                                local screenVector = Vector2.new(screenPos.X, screenPos.Y)
+                                local distance = (screenVector - screenCenter).Magnitude
+                                if distance < shortestDistance and distance <= L.aimbotFOV then
+                                    shortestDistance = distance
+                                    closestTarget = targetPart
+                                end
+                            end
                         end
                     end
                 end
             end
         end
+        scanFolder(Workspace.Camera)
+        scanFolder(Workspace:FindFirstChild("Zombies"))
     end)
+    
+    currentLockedTarget = closestTarget
     return closestTarget
 end
 
@@ -266,6 +269,7 @@ RunService.RenderStepped:Connect(function()
 
     if not L.aimbotEnabled then
         lockBox.Visible = false
+        currentLockedTarget = nil
         return
     end
     
@@ -289,6 +293,7 @@ RunService.RenderStepped:Connect(function()
         end
     else
         lockBox.Visible = false
+        currentLockedTarget = nil
     end
 end)
 
@@ -395,16 +400,6 @@ local function getCurrentTransparency()
     return L.zombieHitboxTransparencyPercent / 100
 end
 
-local function getHitboxFolder()
-    local folder = workspace:FindFirstChild("TomboyHitboxFolder")
-    if not folder then
-        folder = Instance.new("Folder")
-        folder.Name = "TomboyHitboxFolder"
-        folder.Parent = workspace
-    end
-    return folder
-end
-
 local function addHitboxesToZombie(zombie)
     if not L.zombieHitboxEnabled then return end
     if L.zombieHitboxAddedParts[zombie] then return end
@@ -413,7 +408,6 @@ local function addHitboxesToZombie(zombie)
     if not hrp or not head then return end
 
     local currentTrans = getCurrentTransparency()
-    local folder = getHitboxFolder()
 
     local outer = Instance.new("Part")
     outer.Name = "ZombieHitbox_Outer"
@@ -426,7 +420,7 @@ local function addHitboxesToZombie(zombie)
     outer.Massless = true
     outer.Anchored = false
     outer.CFrame = hrp.CFrame
-    outer.Parent = folder
+    outer.Parent = zombie
 
     local weldOuter = Instance.new("WeldConstraint")
     weldOuter.Part0 = hrp
@@ -444,7 +438,7 @@ local function addHitboxesToZombie(zombie)
     headBox.Massless = true
     headBox.Anchored = false
     headBox.CFrame = head.CFrame
-    headBox.Parent = folder
+    headBox.Parent = zombie
 
     local weldHead = Instance.new("WeldConstraint")
     weldHead.Part0 = head
@@ -460,11 +454,39 @@ local function removeHitboxesFromZombie(zombie)
         if parts.outer then parts.outer:Destroy() end
         if parts.head then parts.head:Destroy() end
         L.zombieHitboxAddedParts[zombie] = nil
+    else
+        if zombie and zombie.Parent then
+            for _, child in zombie:GetChildren() do
+                if child.Name == "ZombieHitbox_Outer" or child.Name == "ZombieHitbox_Head" then
+                    child:Destroy()
+                end
+            end
+        end
     end
 end
 
 local function refreshZombieHitboxes()
+    if not L.zombieHitboxEnabled then
+        local toRemove = {}
+        for zombie, _ in L.zombieHitboxAddedParts do
+            table.insert(toRemove, zombie)
+        end
+        for _, zombie in toRemove do
+            removeHitboxesFromZombie(zombie)
+        end
+        L.zombieHitboxAddedParts = {}
+        return
+    end
+
     local allZombies = {}
+    local zombiesFolder = workspace:FindFirstChild("Zombies")
+    if zombiesFolder then
+        for _, z in zombiesFolder:GetChildren() do
+            if z:IsA("Model") and (z.Name == "m_Zombie" or z:FindFirstChild("Orig")) then
+                table.insert(allZombies, z)
+            end
+        end
+    end
     local cameraFolder = workspace:FindFirstChild("Camera")
     if cameraFolder then
         for _, z in cameraFolder:GetChildren() do
@@ -480,18 +502,17 @@ local function refreshZombieHitboxes()
         for _, z in allZombies do
             if z == zombie then stillExists = true; break end
         end
-        if not stillExists then table.insert(toRemove, zombie) end
+        if not stillExists then
+            table.insert(toRemove, zombie)
+        end
     end
-    for _, zombie in toRemove do removeHitboxesFromZombie(zombie) end
+    for _, zombie in toRemove do
+        removeHitboxesFromZombie(zombie)
+    end
 
-    if not L.zombieHitboxEnabled then
-        for zombie, _ in L.zombieHitboxAddedParts do removeHitboxesFromZombie(zombie) end
-        L.zombieHitboxAddedParts = {}
-        local folder = workspace:FindFirstChild("TomboyHitboxFolder")
-        if folder then folder:ClearAllChildren() end
-    else
-        for _, z in allZombies do
-            if not L.zombieHitboxAddedParts[z] then addHitboxesToZombie(z) end
+    for _, z in allZombies do
+        if not L.zombieHitboxAddedParts[z] then
+            addHitboxesToZombie(z)
         end
     end
 end
@@ -510,19 +531,35 @@ local function updateAllZombieHitboxVisuals()
     end
 end
 
---------------------------------------------------
--- 6. ESP SYSTEM
---------------------------------------------------
-local function ensureHighlight(target, fillColor)
-    if not target or not target.Parent then return end
-    if target:FindFirstChild("ESP_Highlight") then return end
+local function onZombieAdded(zombie)
+    if L.zombieHitboxEnabled and zombie:IsA("Model") and (zombie.Name == "m_Zombie" or zombie:FindFirstChild("Orig")) then
+        task.wait(0.1)
+        addHitboxesToZombie(zombie)
+    end
+end
 
-    local h = Instance.new("Highlight")
-    h.Name = "ESP_Highlight"
-    h.Adornee = target
-    h.Parent = target
+local zombiesFolder = workspace:FindFirstChild("Zombies")
+if zombiesFolder then
+    zombiesFolder.ChildAdded:Connect(onZombieAdded)
+end
+local cameraFolder = workspace:FindFirstChild("Camera")
+if cameraFolder then
+    cameraFolder.ChildAdded:Connect(onZombieAdded)
+end
+
+--------------------------------------------------
+-- 6. ESP SYSTEM (FIXED DYNAMIC RE-CHECK & EXACT COLORS)
+--------------------------------------------------
+local function ensureHighlight(target, fillColor, outlineColor)
+    if not target or not target.Parent then return end
+    local h = target:FindFirstChild("ESP_Highlight")
+    if not h then
+        h = Instance.new("Highlight")
+        h.Name = "ESP_Highlight"
+        h.Parent = target
+        h.OutlineColor = outlineColor or Color3.fromRGB(255,255,255)
+    end
     h.FillColor = fillColor or Color3.fromRGB(255,255,255)
-    h.OutlineColor = Color3.fromRGB(255,255,255)
 end
 
 local function removeHighlight(target)
@@ -533,55 +570,56 @@ end
 
 local function scanAndApply()
     pcall(function()
-        for _, child in pairs(Workspace.Camera:GetChildren()) do
-            if child.Name == "m_Zombie" then
-                local types = getZombieClassification(child)
-                local highlighted = false
+        local function processFolder(folder)
+            if not folder then return end
+            for _, child in pairs(folder:GetChildren()) do
+                if child:IsA("Model") and (child.Name == "m_Zombie" or child:FindFirstChild("Orig") or child:FindFirstChild("Humanoid")) then
+                    local types = getZombieClassification(child)
+                    local highlighted = false
 
-                if espShamblerToggled and types.shambler then
-                    ensureHighlight(child, Color3.fromRGB(200, 200, 200))
-                    highlighted = true
-                elseif espRToggled and types.runner then
-                    ensureHighlight(child, Color3.fromRGB(255, 0, 0))
-                    highlighted = true
-                elseif espBToggled and types.bomber then
-                    ensureHighlight(child, Color3.fromRGB(255, 140, 0))
-                    highlighted = true
-                elseif espCuToggled and types.cuirassier then
-                    ensureHighlight(child, Color3.fromRGB(0, 100, 255))
-                    highlighted = true
-                elseif espZToggled and types.zapper then
-                    ensureHighlight(child, Color3.fromRGB(255, 183, 197))
-                    highlighted = true
-                elseif espIgniterToggled and types.igniter then
-                    ensureHighlight(child, Color3.fromRGB(255, 69, 0))
-                    highlighted = true
-                end
+                    if espShamblerToggled and types.shambler then
+                        ensureHighlight(child, Color3.fromRGB(200, 200, 200))
+                        highlighted = true
+                    elseif espRToggled and types.runner then
+                        ensureHighlight(child, Color3.fromRGB(255, 0, 0))
+                        highlighted = true
+                    elseif espBToggled and types.bomber then
+                        ensureHighlight(child, Color3.fromRGB(65, 105, 225))
+                        highlighted = true
+                    elseif espCuToggled and types.cuirassier then
+                        ensureHighlight(child, Color3.fromRGB(65, 105, 225))
+                        highlighted = true
+                    elseif espZToggled and types.zapper then
+                        ensureHighlight(child, Color3.fromRGB(255, 0, 255))
+                        highlighted = true
+                    elseif espIgniterToggled and types.igniter then
+                        ensureHighlight(child, Color3.fromRGB(255, 69, 0))
+                        highlighted = true
+                    end
 
-                if not highlighted then
-                    removeHighlight(child)
+                    if not highlighted then
+                        removeHighlight(child)
+                    end
                 end
             end
         end
+
+        processFolder(Workspace.Camera)
+        processFolder(Workspace:FindFirstChild("Zombies"))
     end)
 end
-
-Workspace.Camera.ChildAdded:Connect(function(child)
-    if child.Name == "m_Zombie" then
-        task.wait(0.1)
-        scanAndApply()
-    end
-end)
 
 RunService.Heartbeat:Connect(scanAndApply)
 
 --------------------------------------------------
--- 7. ANTILAG LOOP
+-- 7. ANTILAG LOOP & HITBOX REFRESH
 --------------------------------------------------
 task.spawn(function()
     while true do
-        task.wait(1)
-        refreshZombieHitboxes()
+        task.wait(2)
+        if L.zombieHitboxEnabled then
+            refreshZombieHitboxes()
+        end
         if L.removeParticlesEnabled then
             for _, desc in pairs(workspace:GetDescendants()) do
                 if desc:IsA("ParticleEmitter") or desc:IsA("Fire") or desc:IsA("Smoke") or desc:IsA("Sparkles") then desc:Destroy() end
@@ -726,12 +764,12 @@ HitboxBox:AddSlider('HitboxTransSlider', {
     end
 })
 
-ESPBox:AddToggle('ESPShamblerToggle', { Text = 'ESP Shambler', Default = false, Callback = function(Value) espShamblerToggled = Value; scanAndApply() end })
-ESPBox:AddToggle('ESPRunnerToggle', { Text = 'ESP Runner (Fast)', Default = false, Callback = function(Value) espRToggled = Value; scanAndApply() end })
-ESPBox:AddToggle('ESPBomberToggle', { Text = 'ESP Bomber', Default = false, Callback = function(Value) espBToggled = Value; scanAndApply() end })
-ESPBox:AddToggle('ESPCuirassToggle', { Text = 'ESP Cuirassier', Default = false, Callback = function(Value) espCuToggled = Value; scanAndApply() end })
-ESPBox:AddToggle('ESPZapperToggle', { Text = 'ESP Zapper', Default = false, Callback = function(Value) espZToggled = Value; scanAndApply() end })
-ESPBox:AddToggle('ESPIgniterToggle', { Text = 'ESP Igniter', Default = false, Callback = function(Value) espIgniterToggled = Value; scanAndApply() end })
+ESPBox:AddToggle('ESPShamblerToggle', { Text = 'ESP Shambler', Default = false, Callback = function(Value) espShamblerToggled = Value end })
+ESPBox:AddToggle('ESPRunnerToggle', { Text = 'ESP Runner (Fast)', Default = false, Callback = function(Value) espRToggled = Value end })
+ESPBox:AddToggle('ESPBomberToggle', { Text = 'ESP Bomber', Default = false, Callback = function(Value) espBToggled = Value end })
+ESPBox:AddToggle('ESPCuirassToggle', { Text = 'ESP Cuirassier', Default = false, Callback = function(Value) espCuToggled = Value end })
+ESPBox:AddToggle('ESPZapperToggle', { Text = 'ESP Zapper', Default = false, Callback = function(Value) espZToggled = Value end })
+ESPBox:AddToggle('ESPIgniterToggle', { Text = 'ESP Igniter', Default = false, Callback = function(Value) espIgniterToggled = Value end })
 
 AntilagBox:AddToggle('RemoveParticlesTest', {
     Text = 'Removes Particles',
@@ -749,8 +787,9 @@ AntilagBox:AddToggle('RemoveHorsesToggle', {
 
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu Settings')
 MenuGroup:AddButton('destroy thou script', function() 
-    local folder = workspace:FindFirstChild("TomboyHitboxFolder")
-    if folder then folder:Destroy() end
+    for zombie, _ in L.zombieHitboxAddedParts do
+        removeHitboxesFromZombie(zombie)
+    end
     fovDrawingCircle:Remove()
     lockBox:Remove()
     Library:Unload() 
