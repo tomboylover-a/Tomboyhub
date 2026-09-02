@@ -93,6 +93,47 @@ lockBox.Filled = false
 lockBox.Transparency = 0.9
 
 --------------------------------------------------
+-- TOMBOY MUSICIAN SYSTEM
+--------------------------------------------------
+_G.MusicianAutoPlay = false
+
+local function HookBeatTracker()
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    if not modules then return end
+    local gameplay = modules:FindFirstChild("Gameplay")
+    if not gameplay then return end
+    local beatTrackerModule = gameplay:FindFirstChild("BeatTracker")
+    if not beatTrackerModule then return end
+    
+    local success, BeatTracker = pcall(require, beatTrackerModule)
+    if not success or not BeatTracker then return end
+    
+    if _G.BeatTrackerHooked then return end
+    _G.BeatTrackerHooked = true
+
+    local oldUpdate = BeatTracker.update
+    BeatTracker.update = function(self, dt)
+        local v1 = tick()
+        local beatHappened = false
+        if self.nextBeat < v1 then
+            beatHappened = true
+        end
+
+        oldUpdate(self, dt)
+
+        if beatHappened and _G.MusicianAutoPlay then
+            task.defer(function()
+                if _G.MusicianAutoPlay and self.songSource and self.songSource.IsPlaying then
+                    self:hit()
+                end
+            end)
+        end
+    end
+end
+
+pcall(HookBeatTracker)
+
+--------------------------------------------------
 -- ATTACK SPEED SYSTEM
 --------------------------------------------------
 local function applyBuffToTool(tool)
@@ -374,7 +415,6 @@ RunService.RenderStepped:Connect(function()
         currentLockedTarget = nil
     end
 end)
-
 --------------------------------------------------
 -- CLEAN MELEE HOOK
 --------------------------------------------------
@@ -470,6 +510,7 @@ if LocalPlayer.Character then
     task.wait(0.5)
     installHook()
 end
+
 --------------------------------------------------
 -- HITBOX MANAGER
 --------------------------------------------------
@@ -749,6 +790,13 @@ CombatBox:AddToggle('Tomboyhitter', {
     Callback = function(Value) L.tomboyHitterEnabled = Value end
 })
 
+CombatBox:AddToggle('TomboyMusician', {
+    Text = 'tomboy musician',
+    Default = false,
+    Tooltip = 'Automatically plays instrument notes perfectly on beat.',
+    Callback = function(Value) _G.MusicianAutoPlay = Value end
+})
+
 CombatBox:AddToggle('SpeedToggle', {
     Text = 'Tomboy Speed',
     Default = false,
@@ -887,4 +935,4 @@ if successSM and SaveManager then
     SaveManager:LoadAutoloadConfig()
 end
 
-print("tomboy hub loaded successfully with tomboys!")
+print("tomboy hub loaded successfully with tomboys and Cum!")
