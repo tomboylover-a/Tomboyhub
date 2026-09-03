@@ -511,6 +511,7 @@ if LocalPlayer.Character then
     installHook()
 end
 
+
 --------------------------------------------------
 -- HITBOX MANAGER
 --------------------------------------------------
