@@ -40,7 +40,6 @@ L.removeHorsesEnabled = false
 L.attackSpeedEnabled = false
 L.attackSpeedMultiplier = 1
 
--- Aimbot Settings
 L.aimbotEnabled = false
 L.aimbotFOV = 300
 L.aimbotTargetPart = "Head"
@@ -48,14 +47,12 @@ L.aimbotMaxRange = 500
 L.fovCircleVisible = false
 L.fovCircleFilled = false
 
--- Wall Check Settings
 L.customWallCheckEnabled = true
 local v3new = Vector3.new
 local WALL_CHECK_SAMPLE_AXIS_SCALE = 0.4
 local WALL_CHECK_MIN_SAMPLE_OFFSET = 0.5
 local WALL_CHECK_MAX_SAMPLE_OFFSET = 3.0
 
--- Target Filters
 L.targetShambler = true
 L.targetRunner = true
 L.targetBomber = true
@@ -63,7 +60,6 @@ L.targetCuirassier = true
 L.targetZapper = true
 L.targetIgniter = true
 
--- ESP Toggles Global Reference
 getgenv().espShamblerToggled = false
 getgenv().espRToggled = false
 getgenv().espBToggled = false
@@ -92,9 +88,6 @@ lockBox.Color = Color3.fromRGB(0, 255, 100)
 lockBox.Filled = false
 lockBox.Transparency = 0.9
 
---------------------------------------------------
--- TOMBOY MUSICIAN SYSTEM
---------------------------------------------------
 _G.MusicianAutoPlay = false
 
 local function HookBeatTracker()
@@ -133,9 +126,6 @@ end
 
 pcall(HookBeatTracker)
 
---------------------------------------------------
--- ATTACK SPEED SYSTEM
---------------------------------------------------
 local function applyBuffToTool(tool)
     if not tool:IsA("Tool") then return end
     local buff = tool:FindFirstChild("SwingSpeedBuff")
@@ -170,9 +160,6 @@ end
 
 if LocalPlayer.Character then setupToolListeners(LocalPlayer.Character) end
 
---------------------------------------------------
--- ROBUST CLASSIFICATION & MODEL HELPERS
---------------------------------------------------
 local function getZombieClassification(child)
     local name = child.Name:lower()
     local isBomber = child:FindFirstChild("Barrel") ~= nil or name:find("bomber") or name:find("barrel")
@@ -206,10 +193,118 @@ local function getZombieClassification(child)
     }
 end
 
---------------------------------------------------
--- AIMBOT UTILITIES & PIERCING WALL CHECK
---------------------------------------------------
+local function isZombieDead(zombieModel)
+    if not zombieModel or not zombieModel.Parent then return true end
+    local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
+    local orig = zombieModel:FindFirstChild("Orig")
+    if not humanoid and orig and orig.Value then
+        humanoid = orig.Value:FindFirstChildOfClass("Humanoid")
+    end
+    if humanoid and humanoid.Health <= 0 then
+        return true
+    end
+    return false
+end
+
+local function getZombieModel(part)
+    if not part then return nil end
+    local model = part.Parent
+    for i = 1, 5 do
+        if not model then break end
+        if model:IsA("Model") and (model.Name == "m_Zombie" or model:FindFirstChild("Orig")) then
+            return model
+        end
+        model = model.Parent
+    end
+    return nil
+end
+
+local function getZombieHead(zombieModel)
+    if not zombieModel then return nil end
+    for _, part in zombieModel:GetChildren() do
+        if part.Name == "Head" and (part:IsA("Part") or part:IsA("MeshPart")) then
+            return part
+        end
+    end
+    return nil
+end
+
+local function unifiedMeleeHitCheck(self, origin, direction, raycastParams, hitEntities, isCharge)
+    local rayResult = workspace:Raycast(origin, direction, raycastParams)
+    if rayResult and L.tomboyHitterEnabled then
+        local hitPart = rayResult.Instance
+        local zombieModel = getZombieModel(hitPart)
+        if zombieModel then
+            if isZombieDead(zombieModel) then
+                return 0 
+            end
+
+            local now = tick()
+            if lastZombieHitTime[zombieModel] and now - lastZombieHitTime[zombieModel] < ZOMBIE_HIT_COOLDOWN then
+                return 0
+            end
+            local orig = zombieModel:FindFirstChild("Orig")
+            if orig then
+                local head = getZombieHead(zombieModel)
+                if head then
+                    local zombieRef = orig.Value
+                    local hitPos = head.Position
+                    local partName = "Head"
+                    local char = LocalPlayer.Character
+                    local headPart = char and char:FindFirstChild("Head")
+                    local Direction = headPart and (hitPos - headPart.Position).Unit or Vector3.new(0, 1, 0)
+                    if isCharge then
+                        self.remoteEvent:FireServer("ThrustCharge", zombieRef, hitPos, rayResult.Normal)
+                    else
+                        self.remoteEvent:FireServer("HitZombieM", zombieRef, hitPos, true, hitPos, partName, Direction)
+                    end
+                    lastZombieHitTime[zombieModel] = now
+                    return 1
+                end
+            end
+        end
+    end
+    if originalMeleeHitCheck then
+        return originalMeleeHitCheck(self, origin, direction, raycastParams, hitEntities, isCharge)
+    end
+    return 0
+end
+
+local function installHook()
+    if hookInstalled then return end
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    if not modules then return end
+    local weapons = modules:FindFirstChild("Weapons")
+    if not weapons then return end
+    local success, MeleeBase = pcall(require, weapons:FindFirstChild("MeleeBase"))
+    if not success or not MeleeBase then return end
+    if type(hookfunction) == "function" then
+        if not originalMeleeHitCheck then
+            originalMeleeHitCheck = hookfunction(MeleeBase.MeleeHitCheck, unifiedMeleeHitCheck)
+        else
+            hookfunction(MeleeBase.MeleeHitCheck, unifiedMeleeHitCheck)
+        end
+    else
+        if not originalMeleeHitCheck then
+            originalMeleeHitCheck = MeleeBase.MeleeHitCheck
+        end
+        MeleeBase.MeleeHitCheck = unifiedMeleeHitCheck
+    end
+    hookInstalled = true
+end
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    installHook()
+end)
+
+if LocalPlayer.Character then
+    task.wait(0.5)
+    installHook()
+end
+
 local function isValidZombieType(child)
+    if isZombieDead(child) then return false end
     local types = getZombieClassification(child)
     if types.shambler and L.targetShambler then return true end
     if types.runner and L.targetRunner then return true end
@@ -415,120 +510,13 @@ RunService.RenderStepped:Connect(function()
         currentLockedTarget = nil
     end
 end)
---------------------------------------------------
--- CLEAN MELEE HOOK
---------------------------------------------------
-local function getZombieModel(part)
-    if not part then return nil end
-    local model = part.Parent
-    for i = 1, 5 do
-        if not model then break end
-        if model:IsA("Model") and (model.Name == "m_Zombie" or model:FindFirstChild("Orig")) then
-            return model
-        end
-        model = model.Parent
-    end
-    return nil
-end
-
-local function getZombieHead(zombieModel)
-    if not zombieModel then return nil end
-    for _, part in zombieModel:GetChildren() do
-        if part.Name == "Head" and (part:IsA("Part") or part:IsA("MeshPart")) then
-            return part
-        end
-    end
-    return nil
-end
-
-local function unifiedMeleeHitCheck(self, origin, direction, raycastParams, hitEntities, isCharge)
-    local rayResult = workspace:Raycast(origin, direction, raycastParams)
-    if rayResult and L.tomboyHitterEnabled then
-        local hitPart = rayResult.Instance
-        local zombieModel = getZombieModel(hitPart)
-        if zombieModel then
-            -- CHECK IF ZOMBIE IS ALREADY DEAD / DYING TO PREVENT FLINGING
-            local humanoid = zombieModel:FindFirstChildOfClass("Humanoid") 
-                or (zombieModel:FindFirstChild("Orig") and zombieModel.Orig.Value and zombieModel.Orig.Value:FindFirstChildOfClass("Humanoid"))
-            
-            if humanoid and humanoid.Health <= 0 then
-                return 0 -- Ignore dead zombies so they don't fling!
-            end
-
-            local now = tick()
-            if lastZombieHitTime[zombieModel] and now - lastZombieHitTime[zombieModel] < ZOMBIE_HIT_COOLDOWN then
-                return 0
-            end
-            local orig = zombieModel:FindFirstChild("Orig")
-            if orig then
-                local head = getZombieHead(zombieModel)
-                if head then
-                    local zombieRef = orig.Value
-                    local hitPos = head.Position
-                    local partName = "Head"
-                    local char = LocalPlayer.Character
-                    local headPart = char and char:FindFirstChild("Head")
-                    local Direction = headPart and (hitPos - headPart.Position).Unit or Vector3.new(0, 1, 0)
-                    if isCharge then
-                        self.remoteEvent:FireServer("ThrustCharge", zombieRef, hitPos, rayResult.Normal)
-                    else
-                        self.remoteEvent:FireServer("HitZombieM", zombieRef, hitPos, true, hitPos, partName, Direction)
-                    end
-                    lastZombieHitTime[zombieModel] = now
-                    return 1
-                end
-            end
-        end
-    end
-    if originalMeleeHitCheck then
-        return originalMeleeHitCheck(self, origin, direction, raycastParams, hitEntities, isCharge)
-    end
-    return 0
-end
-
-local function installHook()
-    if hookInstalled then return end
-    local modules = ReplicatedStorage:FindFirstChild("Modules")
-    if not modules then return end
-    local weapons = modules:FindFirstChild("Weapons")
-    if not weapons then return end
-    local success, MeleeBase = pcall(require, weapons:FindFirstChild("MeleeBase"))
-    if not success or not MeleeBase then return end
-    if type(hookfunction) == "function" then
-        if not originalMeleeHitCheck then
-            originalMeleeHitCheck = hookfunction(MeleeBase.MeleeHitCheck, unifiedMeleeHitCheck)
-        else
-            hookfunction(MeleeBase.MeleeHitCheck, unifiedMeleeHitCheck)
-        end
-    else
-        if not originalMeleeHitCheck then
-            originalMeleeHitCheck = MeleeBase.MeleeHitCheck
-        end
-        MeleeBase.MeleeHitCheck = unifiedMeleeHitCheck
-    end
-    hookInstalled = true
-end
-
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(1)
-    installHook()
-end)
-
-if LocalPlayer.Character then
-    task.wait(0.5)
-    installHook()
-end
-
---------------------------------------------------
--- HITBOX MANAGER
---------------------------------------------------
 local function getCurrentTransparency()
     if not L.zombieHitboxVisualsEnabled then return 1 end
     return L.zombieHitboxTransparencyPercent / 100
 end
 
 local function addHitboxesToZombie(zombie)
-    if not L.zombieHitboxEnabled then return end
+    if not L.zombieHitboxEnabled or isZombieDead(zombie) then return end
     if L.zombieHitboxAddedParts[zombie] then return end
     local hrp = zombie:FindFirstChild("HumanoidRootPart")
     local head = zombie:FindFirstChild("Head")
@@ -606,28 +594,26 @@ local function refreshZombieHitboxes()
     end
 
     local allZombies = {}
-    local zombiesFolder = workspace:FindFirstChild("Zombies")
-    if zombiesFolder then
-        for _, z in zombiesFolder:GetChildren() do
+    local function scanFolder(folder)
+        if not folder then return end
+        for _, z in folder:GetChildren() do
             if z:IsA("Model") and (z.Name == "m_Zombie" or z:FindFirstChild("Orig")) then
-                table.insert(allZombies, z)
+                if not isZombieDead(z) then
+                    table.insert(allZombies, z)
+                end
             end
         end
     end
-    local cameraFolder = workspace:FindFirstChild("Camera")
-    if cameraFolder then
-        for _, z in cameraFolder:GetChildren() do
-            if z:IsA("Model") and (z.Name == "m_Zombie" or z:FindFirstChild("Orig")) then
-                table.insert(allZombies, z)
-            end
-        end
-    end
+    scanFolder(workspace:FindFirstChild("Zombies"))
+    scanFolder(workspace:FindFirstChild("Camera"))
 
     local toRemove = {}
     for zombie, _ in L.zombieHitboxAddedParts do
         local stillExists = false
-        for _, z in allZombies do
-            if z == zombie then stillExists = true; break end
+        if zombie.Parent and not isZombieDead(zombie) then
+            for _, z in allZombies do
+                if z == zombie then stillExists = true; break end
+            end
         end
         if not stillExists then
             table.insert(toRemove, zombie)
@@ -661,7 +647,9 @@ end
 local function onZombieAdded(zombie)
     if L.zombieHitboxEnabled and zombie:IsA("Model") and (zombie.Name == "m_Zombie" or zombie:FindFirstChild("Orig")) then
         task.wait(0.1)
-        addHitboxesToZombie(zombie)
+        if not isZombieDead(zombie) then
+            addHitboxesToZombie(zombie)
+        end
     end
 end
 
@@ -674,11 +662,8 @@ if cameraFolder then
     cameraFolder.ChildAdded:Connect(onZombieAdded)
 end
 
---------------------------------------------------
--- ESP SYSTEM
---------------------------------------------------
 local function ensureHighlight(target, fillColor, outlineColor)
-    if not target or not target.Parent then return end
+    if not target or not target.Parent or isZombieDead(target) then return end
     local h = target:FindFirstChild("ESP_Highlight")
     if not h then
         h = Instance.new("Highlight")
@@ -701,31 +686,36 @@ local function scanAndApply()
             if not folder then return end
             for _, child in pairs(folder:GetChildren()) do
                 if child:IsA("Model") and (child.Name == "m_Zombie" or child:FindFirstChild("Orig") or child:FindFirstChild("Humanoid")) then
-                    local types = getZombieClassification(child)
-                    local highlighted = false
-
-                    if espShamblerToggled and types.shambler then
-                        ensureHighlight(child, Color3.fromRGB(200, 200, 200))
-                        highlighted = true
-                    elseif espRToggled and types.runner then
-                        ensureHighlight(child, Color3.fromRGB(255, 0, 0))
-                        highlighted = true
-                    elseif espBToggled and types.bomber then
-                        ensureHighlight(child, Color3.fromRGB(65, 105, 225))
-                        highlighted = true
-                    elseif espCuToggled and types.cuirassier then
-                        ensureHighlight(child, Color3.fromRGB(65, 105, 225))
-                        highlighted = true
-                    elseif espZToggled and types.zapper then
-                        ensureHighlight(child, Color3.fromRGB(255, 0, 255))
-                        highlighted = true
-                    elseif espIgniterToggled and types.igniter then
-                        ensureHighlight(child, Color3.fromRGB(255, 69, 0))
-                        highlighted = true
-                    end
-
-                    if not highlighted then
+                    if isZombieDead(child) then
                         removeHighlight(child)
+                        removeHitboxesFromZombie(child)
+                    else
+                        local types = getZombieClassification(child)
+                        local highlighted = false
+
+                        if espShamblerToggled and types.shambler then
+                            ensureHighlight(child, Color3.fromRGB(200, 200, 200))
+                            highlighted = true
+                        elseif espRToggled and types.runner then
+                            ensureHighlight(child, Color3.fromRGB(255, 0, 0))
+                            highlighted = true
+                        elseif espBToggled and types.bomber then
+                            ensureHighlight(child, Color3.fromRGB(65, 105, 225))
+                            highlighted = true
+                        elseif espCuToggled and types.cuirassier then
+                            ensureHighlight(child, Color3.fromRGB(65, 105, 225))
+                            highlighted = true
+                        elseif espZToggled and types.zapper then
+                            ensureHighlight(child, Color3.fromRGB(255, 0, 255))
+                            highlighted = true
+                        elseif espIgniterToggled and types.igniter then
+                            ensureHighlight(child, Color3.fromRGB(255, 69, 0))
+                            highlighted = true
+                        end
+
+                        if not highlighted then
+                            removeHighlight(child)
+                        end
                     end
                 end
             end
@@ -738,9 +728,6 @@ end
 
 RunService.Heartbeat:Connect(scanAndApply)
 
---------------------------------------------------
--- ANTILAG LOOP & HITBOX REFRESH
---------------------------------------------------
 task.spawn(function()
     while true do
         task.wait(2)
@@ -763,9 +750,6 @@ task.spawn(function()
     end
 end)
 
---------------------------------------------------
--- OBSIDIAN UI SETUP
---------------------------------------------------
 local Window = Library:CreateWindow({
     Title = "Tomboy Hub",
     Footer = "Obsidian UI",
@@ -943,4 +927,4 @@ if successSM and SaveManager then
     SaveManager:LoadAutoloadConfig()
 end
 
-print("tomboy hub loaded successfully with tomboys and Cum!")
+print("tomboy hub loaded successfully with tomboys, musician, and no flinging bugs!")
