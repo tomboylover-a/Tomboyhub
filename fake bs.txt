@@ -72,6 +72,7 @@ local originalMeleeHitCheck = nil
 local lastZombieHitTime = {}
 local ZOMBIE_HIT_COOLDOWN = 0.1
 local currentLockedTarget = nil
+local deadZombies = {}
 
 local fovDrawingCircle = Drawing.new("Circle")
 fovDrawingCircle.Visible = false
@@ -195,12 +196,16 @@ end
 
 local function isZombieDead(zombieModel)
     if not zombieModel or not zombieModel.Parent then return true end
+    if deadZombies[zombieModel] then return true end
+    
     local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
     local orig = zombieModel:FindFirstChild("Orig")
     if not humanoid and orig and orig.Value then
         humanoid = orig.Value:FindFirstChildOfClass("Humanoid")
     end
-    if humanoid and humanoid.Health <= 0 then
+    
+    if not humanoid or humanoid.Health <= 0 then
+        deadZombies[zombieModel] = true
         return true
     end
     return false
@@ -515,8 +520,28 @@ local function getCurrentTransparency()
     return L.zombieHitboxTransparencyPercent / 100
 end
 
+local function removeHitboxesFromZombie(zombie)
+    local parts = L.zombieHitboxAddedParts[zombie]
+    if parts then
+        if parts.outer then parts.outer:Destroy() end
+        if parts.head then parts.head:Destroy() end
+        L.zombieHitboxAddedParts[zombie] = nil
+    else
+        if zombie and zombie.Parent then
+            for _, child in zombie:GetChildren() do
+                if child.Name == "ZombieHitbox_Outer" or child.Name == "ZombieHitbox_Head" then
+                    child:Destroy()
+                end
+            end
+        end
+    end
+end
+
 local function addHitboxesToZombie(zombie)
-    if not L.zombieHitboxEnabled or isZombieDead(zombie) then return end
+    if not L.zombieHitboxEnabled or isZombieDead(zombie) then
+        removeHitboxesFromZombie(zombie)
+        return
+    end
     if L.zombieHitboxAddedParts[zombie] then return end
     local hrp = zombie:FindFirstChild("HumanoidRootPart")
     local head = zombie:FindFirstChild("Head")
@@ -563,23 +588,6 @@ local function addHitboxesToZombie(zombie)
     L.zombieHitboxAddedParts[zombie] = { outer = outer, head = headBox }
 end
 
-local function removeHitboxesFromZombie(zombie)
-    local parts = L.zombieHitboxAddedParts[zombie]
-    if parts then
-        if parts.outer then parts.outer:Destroy() end
-        if parts.head then parts.head:Destroy() end
-        L.zombieHitboxAddedParts[zombie] = nil
-    else
-        if zombie and zombie.Parent then
-            for _, child in zombie:GetChildren() do
-                if child.Name == "ZombieHitbox_Outer" or child.Name == "ZombieHitbox_Head" then
-                    child:Destroy()
-                end
-            end
-        end
-    end
-end
-
 local function refreshZombieHitboxes()
     if not L.zombieHitboxEnabled then
         local toRemove = {}
@@ -598,7 +606,9 @@ local function refreshZombieHitboxes()
         if not folder then return end
         for _, z in folder:GetChildren() do
             if z:IsA("Model") and (z.Name == "m_Zombie" or z:FindFirstChild("Orig")) then
-                if not isZombieDead(z) then
+                if isZombieDead(z) then
+                    removeHitboxesFromZombie(z)
+                else
                     table.insert(allZombies, z)
                 end
             end
@@ -730,7 +740,7 @@ RunService.Heartbeat:Connect(scanAndApply)
 
 task.spawn(function()
     while true do
-        task.wait(2)
+        task.wait(1)
         if L.zombieHitboxEnabled then
             refreshZombieHitboxes()
         end
