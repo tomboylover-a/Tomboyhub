@@ -33,6 +33,7 @@ L.aimbotTargetPart = "Head"
 L.aimbotMaxRange = 500
 L.fovCircleVisible = false
 L.fovCircleFilled = false
+L.customWallCheckEnabled = false
 
 L.targetShambler = true
 L.targetRunner = true
@@ -54,6 +55,9 @@ getgenv().espIgniterToggled = false
 _G.MusicianAutoPlay = false
 
 local v3new = Vector3.new
+local WALL_CHECK_SAMPLE_AXIS_SCALE = 0.4
+local WALL_CHECK_MIN_SAMPLE_OFFSET = 0.5
+local WALL_CHECK_MAX_SAMPLE_OFFSET = 1.5
 
 local fovDrawingCircle = Drawing.new("Circle")
 fovDrawingCircle.Visible = false
@@ -69,6 +73,55 @@ lockBox.Thickness = 2
 lockBox.Color = Color3.fromRGB(0, 255, 100)
 lockBox.Filled = false
 lockBox.Transparency = 0.9
+
+function L.isWallBetween(origin, targetPos, targetModel)
+    if not L.customWallCheckEnabled then return false end
+    local dir = targetPos - origin
+    local dist = dir.Magnitude
+    if dist <= 0 then return false end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local ignoreList = {}
+    for _, pl in Players:GetPlayers() do
+        if pl.Character then table.insert(ignoreList, pl.Character) end
+    end
+    local zombies = Workspace:FindFirstChild("Zombies")
+    if zombies then table.insert(ignoreList, zombies) end
+    if targetModel then table.insert(ignoreList, targetModel) end
+    params.FilterDescendantsInstances = ignoreList
+    local result = Workspace:Raycast(origin, dir, params)
+    return result ~= nil
+end
+
+local function getWallCheckSamplePositions(part, aimPosOverride)
+    if not part or not part.Parent then return {} end
+    local basePos = aimPosOverride or part.Position
+    local cf = part.CFrame
+    local size = part.Size or v3new(1,1,1)
+    local function axisOffset(comp)
+        local scaled = comp * WALL_CHECK_SAMPLE_AXIS_SCALE
+        if scaled < WALL_CHECK_MIN_SAMPLE_OFFSET then scaled = WALL_CHECK_MIN_SAMPLE_OFFSET end
+        if scaled > WALL_CHECK_MAX_SAMPLE_OFFSET then scaled = WALL_CHECK_MAX_SAMPLE_OFFSET end
+        return scaled
+    end
+    local xOff = axisOffset(size.X)
+    local yOff = axisOffset(size.Y)
+    local zOff = axisOffset(size.Z)
+    local offsets = {
+        v3new(0,0,0),
+        v3new(0, yOff, 0),
+        v3new(0, -yOff, 0),
+        v3new(xOff, 0, 0),
+        v3new(-xOff, 0, 0),
+        v3new(0, 0, zOff),
+        v3new(0, 0, -zOff)
+    }
+    local samples = {}
+    for _, offset in offsets do
+        samples[#samples+1] = basePos + cf:VectorToWorldSpace(offset)
+    end
+    return samples
+end
 
 local function HookBeatTracker()
     local modules = ReplicatedStorage:FindFirstChild("Modules")
@@ -439,6 +492,8 @@ local function getClosestFilteredTarget()
     local closestTarget = nil
     local shortestDistance = math.huge
     local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local char = LocalPlayer.Character
+    local localHead = char and char:FindFirstChild("Head")
 
     pcall(function()
         local function scanFolder(folder)
@@ -456,8 +511,22 @@ local function getClosestFilteredTarget()
                                 local screenVector = Vector2.new(screenPos.X, screenPos.Y)
                                 local distance = (screenVector - screenCenter).Magnitude
                                 if distance < shortestDistance and distance <= L.aimbotFOV then
-                                    shortestDistance = distance
-                                    closestTarget = targetPart
+                                    local isVisible = true
+                                    if L.customWallCheckEnabled and localHead then
+                                        isVisible = false
+                                        local samples = getWallCheckSamplePositions(targetPart)
+                                        for _, samplePos in ipairs(samples) do
+                                              if not L.isWallBetween(localHead.Position, samplePos, child) then
+                                                isVisible = true
+                                                break
+                                            end
+                                        end
+                                    end
+
+                                    if isVisible then
+                                        shortestDistance = distance
+                                        closestTarget = targetPart
+                                    end
                                 end
                             end
                         end
@@ -693,6 +762,12 @@ AimbotMainBox:AddToggle('AimbotToggle', {
     Text = 'Enable AIMBOT',
     Default = false,
     Callback = function(Value) L.aimbotEnabled = Value end
+})
+
+AimbotMainBox:AddToggle('WallCheckToggle', {
+    Text = 'Wall Check (Visibility)',
+    Default = false,
+    Callback = function(Value) L.customWallCheckEnabled = Value end
 })
 
 AimbotMainBox:AddDropdown('AimbotTargetPart', {
