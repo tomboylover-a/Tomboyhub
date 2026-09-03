@@ -18,7 +18,10 @@ L.lastZombieHitTime = {}
 L.ZOMBIE_HIT_COOLDOWN = 0.1
 
 L.hitboxExpanderEnabled = false
+L.hitboxVisualsEnabled = true
 L.hitboxSize = 5
+L.hitboxColor = Color3.fromRGB(255, 0, 0)
+L.hitboxTransparency = 70
 
 L.attackSpeedEnabled = false
 L.attackSpeedMultiplier = 1
@@ -31,8 +34,6 @@ L.aimbotMaxRange = 500
 L.fovCircleVisible = false
 L.fovCircleFilled = false
 
-local v3new = Vector3.new
-
 L.targetShambler = true
 L.targetRunner = true
 L.targetBomber = true
@@ -40,7 +41,19 @@ L.targetCuirassier = true
 L.targetZapper = true
 L.targetIgniter = true
 
+L.removeParticlesEnabled = false
+L.removeHorsesEnabled = false
+
+getgenv().espShamblerToggled = false
+getgenv().espRToggled = false
+getgenv().espBToggled = false
+getgenv().espCuToggled = false
+getgenv().espZToggled = false
+getgenv().espIgniterToggled = false
+
 _G.MusicianAutoPlay = false
+
+local v3new = Vector3.new
 
 local fovDrawingCircle = Drawing.new("Circle")
 fovDrawingCircle.Visible = false
@@ -386,20 +399,31 @@ RunService.Heartbeat:Connect(function()
             if not folder then return end
             for _, child in pairs(folder:GetChildren()) do
                 if child:IsA("Model") and (child.Name == "m_Zombie" or child:FindFirstChild("Orig") or child:FindFirstChild("Humanoid")) then
-                    local head = child:FindFirstChild("Head")
-                    if head and head:IsA("BasePart") then
+                    local hrp = child:FindFirstChild("HumanoidRootPart") or child:FindFirstChild("Torso")
+                    if hrp and hrp:IsA("BasePart") then
                         if L.hitboxExpanderEnabled and not isZombieDead(child) then
                             local targetSize = v3new(L.hitboxSize, L.hitboxSize, L.hitboxSize)
-                            if head.Size ~= targetSize then
-                                head.Size = targetSize
-                                head.Transparency = 0.7
-                                head.CanCollide = false
-                                head.Massless = true
+                            local targetTransparency = L.hitboxVisualsEnabled and ((L.hitboxTransparency or 70) / 100) or 1
+                            local targetColor = L.hitboxColor or Color3.fromRGB(255, 0, 0)
+                            
+                            if hrp.Size ~= targetSize or hrp.Transparency ~= targetTransparency or hrp.Color ~= targetColor then
+                                hrp.Size = targetSize
+                                hrp.Transparency = targetTransparency
+                                hrp.Color = targetColor
+                                hrp.CanCollide = false
+                                hrp.Massless = true
                             end
                         else
-                            if head.Size ~= v3new(1, 1, 1) then
-                                head.Size = v3new(1, 1, 1)
-                                head.Transparency = 0
+                            if hrp.Name == "HumanoidRootPart" then
+                                if hrp.Size ~= v3new(2, 2, 1) or hrp.Transparency ~= 1 then
+                                    hrp.Size = v3new(2, 2, 1)
+                                    hrp.Transparency = 1
+                                end
+                            elseif hrp.Name == "Torso" then
+                                if hrp.Size ~= v3new(2, 2, 1) or hrp.Transparency ~= 0 then
+                                    hrp.Size = v3new(2, 2, 1)
+                                    hrp.Transparency = 0
+                                end
                             end
                         end
                     end
@@ -483,73 +507,6 @@ RunService.RenderStepped:Connect(function()
         lockBox.Visible = false
     end
 end)
-
--- Tomboy Hub - G&B (Part 2 of 2)
-local L = getgenv().L
-if not L then
-    warn("Please execute Part 1 first!")
-    return
-end
-
-local Workspace = game:GetService("Workspace")
-local RunService = game:GetService("RunService")
-
-L.removeParticlesEnabled = false
-L.removeHorsesEnabled = false
-
-getgenv().espShamblerToggled = false
-getgenv().espRToggled = false
-getgenv().espBToggled = false
-getgenv().espCuToggled = false
-getgenv().espZToggled = false
-getgenv().espIgniterToggled = false
-
-local function isZombieDead(zombieModel)
-    if not zombieModel or not zombieModel.Parent then return true end
-    local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
-    local orig = zombieModel:FindFirstChild("Orig")
-    if not humanoid and orig and orig.Value then
-        humanoid = orig.Value:FindFirstChildOfClass("Humanoid")
-    end
-    if humanoid and humanoid.Health <= 0 then
-        return true
-    end
-    return false
-end
-
-local function getZombieClassification(child)
-    local name = child.Name:lower()
-    local isBomber = child:FindFirstChild("Barrel") ~= nil or name:find("bomber") or name:find("barrel")
-    local isIgniter = child:FindFirstChild("Lantern") ~= nil or child:FindFirstChild("Torch") ~= nil or name:find("igniter") or name:find("lantern")
-    local isCuirassier = child:FindFirstChild("Sword") ~= nil or name:find("cuirassier") or name:find("sword")
-    local isZapper = child:FindFirstChild("Axe") ~= nil or name:find("zapper") or name:find("axe")
-    
-    local zombieRef = nil
-    local origin = child:FindFirstChild("Orig")
-    if origin and origin.Value then
-        zombieRef = origin.Value
-    end
-
-    local ws = 16
-    if zombieRef and zombieRef:FindFirstChild("Zombie") then
-        ws = zombieRef.Zombie.WalkSpeed or 16
-    elseif child:FindFirstChild("Humanoid") then
-        ws = child.Humanoid.WalkSpeed or 16
-    end
-
-    local isRunner = (ws >= 20) or name:find("runner") or name:find("fast")
-    local isShambler = not (isBomber or isRunner or isIgniter or isCuirassier or isZapper)
-
-    return {
-        shambler = isShambler,
-        runner = isRunner,
-        bomber = isBomber,
-        cuirassier = isCuirassier,
-        zapper = isZapper,
-        igniter = isIgniter
-    }
-end
-
 local function ensureHighlight(target, fillColor, outlineColor)
     if not target or not target.Parent or isZombieDead(target) then return end
     local h = target:FindFirstChild("ESP_Highlight")
@@ -626,7 +583,6 @@ Workspace.DescendantAdded:Connect(function(desc)
     end)
 end)
 
--- Obsidian UI Setup
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 
 local successLib, Library = pcall(function()
@@ -711,6 +667,22 @@ HitboxBox:AddToggle('HitboxToggle', {
     Callback = function(Value) L.hitboxExpanderEnabled = Value end
 })
 
+HitboxBox:AddToggle('HitboxVisualsToggle', {
+    Text = 'Show Hitbox Visuals',
+    Default = true,
+    Callback = function(Value) L.hitboxVisualsEnabled = Value end
+}):AddColorPicker('HitboxColorPicker', {
+    Default = Color3.fromRGB(255, 0, 0),
+    Title = 'Hitbox Visual Color',
+    Callback = function(Value) L.hitboxColor = Value end
+})
+
+HitboxBox:AddSlider('HitboxTransparencySlider', {
+    Text = 'Hitbox Transparency',
+    Default = 70, Min = 0, Max = 100, Suffix = '%', Rounding = 0,
+    Callback = function(Value) L.hitboxTransparency = Value end
+})
+
 HitboxBox:AddSlider('HitboxSizeSlider', {
     Text = 'Hitbox Size',
     Default = 5, Min = 2, Max = 15, Suffix = ' studs', Rounding = 0,
@@ -748,15 +720,15 @@ AimbotMainBox:AddSlider('AimbotFOV', {
     Callback = function(Value) L.aimbotFOV = Value end
 })
 
-TargetFilterBox:AddToggle('TargetShambler', { Text = 'kill Shambler', Default = true, Callback = function(Value) L.targetShambler = Value end })
-TargetFilterBox:AddToggle('TargetRunner', { Text = 'cum in Runner', Default = true, Callback = function(Value) L.targetRunner = Value end })
-TargetFilterBox:AddToggle('TargetBomber', { Text = 'rape Bomber', Default = true, Callback = function(Value) L.targetBomber = Value end })
-TargetFilterBox:AddToggle('TargetCuirassier', { Text = 'fuco Cuirassier', Default = true, Callback = function(Value) L.targetCuirassier = Value end })
-TargetFilterBox:AddToggle('TargetZapper', { Text = 'tomboy Zapper', Default = true, Callback = function(Value) L.targetZapper = Value end })
-TargetFilterBox:AddToggle('TargetIgniter', { Text = 'tomboy Igniter', Default = true, Callback = function(Value) L.targetIgniter = Value end })
+TargetFilterBox:AddToggle('TargetShambler', { Text = 'aim Shambler', Default = true, Callback = function(Value) L.targetShambler = Value end })
+TargetFilterBox:AddToggle('TargetRunner', { Text = 'aim Runner', Default = true, Callback = function(Value) L.targetRunner = Value end })
+TargetFilterBox:AddToggle('TargetBomber', { Text = 'aim Bomber', Default = true, Callback = function(Value) L.targetBomber = Value end })
+TargetFilterBox:AddToggle('TargetCuirassier', { Text = 'aim Cuirassier', Default = true, Callback = function(Value) L.targetCuirassier = Value end })
+TargetFilterBox:AddToggle('TargetZapper', { Text = 'aim Zapper', Default = true, Callback = function(Value) L.targetZapper = Value end })
+TargetFilterBox:AddToggle('TargetIgniter', { Text = 'aim Igniter', Default = true, Callback = function(Value) L.targetIgniter = Value end })
 
 ESPBox:AddToggle('ESPShamblerToggle', { Text = 'ESP Shambler', Default = false, Callback = function(Value) espShamblerToggled = Value end })
-ESPBox:AddToggle('ESPRunnerToggle', { Text = 'ESP Runner', Default = false, Callback = function(Value) espRToggled = Value end })
+ESPBox:AddToggle('ESPRunnerToggle', { Text = 'ESP Runner (Fast)', Default = false, Callback = function(Value) espRToggled = Value end })
 ESPBox:AddToggle('ESPBomberToggle', { Text = 'ESP Bomber', Default = false, Callback = function(Value) espBToggled = Value end })
 ESPBox:AddToggle('ESPCuirassToggle', { Text = 'ESP Cuirassier', Default = false, Callback = function(Value) espCuToggled = Value end })
 ESPBox:AddToggle('ESPZapperToggle', { Text = 'ESP Zapper', Default = false, Callback = function(Value) espZToggled = Value end })
@@ -797,4 +769,4 @@ if successSM and SaveManager then
     SaveManager:LoadAutoloadConfig()
 end
 
-print("To your asshole!")
+print("Tomboy Hub Loaded Successfully!")
