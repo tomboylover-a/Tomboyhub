@@ -474,43 +474,50 @@ local function unifiedMeleeHitCheck(self, origin, direction, raycastParams, hitE
     end
     if originalMeleeHitCheck then
         return originalMeleeHitCheck(self, origin, direction, raycastParams, hitEntities, isCharge)
+local function unifiedMeleeHitCheck(self, origin, direction, raycastParams, hitEntities, isCharge)
+    local rayResult = workspace:Raycast(origin, direction, raycastParams)
+    if rayResult and L.tomboyHitterEnabled then
+        local hitPart = rayResult.Instance
+        local zombieModel = getZombieModel(hitPart)
+        if zombieModel then
+            -- CHECK IF ZOMBIE IS ALREADY DEAD / DYING TO PREVENT FLINGING
+            local humanoid = zombieModel:FindFirstChildOfClass("Humanoid") 
+                or (zombieModel:FindFirstChild("Orig") and zombieModel.Orig.Value and zombieModel.Orig.Value:FindFirstChildOfClass("Humanoid"))
+            
+            if humanoid and humanoid.Health <= 0 then
+                return 0 -- Ignore dead zombies so they don't fling!
+            end
+
+            local now = tick()
+            if lastZombieHitTime[zombieModel] and now - lastZombieHitTime[zombieModel] < ZOMBIE_HIT_COOLDOWN then
+                return 0
+            end
+            local orig = zombieModel:FindFirstChild("Orig")
+            if orig then
+                local head = getZombieHead(zombieModel)
+                if head then
+                    local zombieRef = orig.Value
+                    local hitPos = head.Position
+                    local partName = "Head"
+                    local char = LocalPlayer.Character
+                    local headPart = char and char:FindFirstChild("Head")
+                    local Direction = headPart and (hitPos - headPart.Position).Unit or Vector3.new(0, 1, 0)
+                    if isCharge then
+                        self.remoteEvent:FireServer("ThrustCharge", zombieRef, hitPos, rayResult.Normal)
+                    else
+                        self.remoteEvent:FireServer("HitZombieM", zombieRef, hitPos, true, hitPos, partName, Direction)
+                    end
+                    lastZombieHitTime[zombieModel] = now
+                    return 1
+                end
+            end
+        end
+    end
+    if originalMeleeHitCheck then
+        return originalMeleeHitCheck(self, origin, direction, raycastParams, hitEntities, isCharge)
     end
     return 0
 end
-
-local function installHook()
-    if hookInstalled then return end
-    local modules = ReplicatedStorage:FindFirstChild("Modules")
-    if not modules then return end
-    local weapons = modules:FindFirstChild("Weapons")
-    if not weapons then return end
-    local success, MeleeBase = pcall(require, weapons:FindFirstChild("MeleeBase"))
-    if not success or not MeleeBase then return end
-    if type(hookfunction) == "function" then
-        if not originalMeleeHitCheck then
-            originalMeleeHitCheck = hookfunction(MeleeBase.MeleeHitCheck, unifiedMeleeHitCheck)
-        else
-            hookfunction(MeleeBase.MeleeHitCheck, unifiedMeleeHitCheck)
-        end
-    else
-        if not originalMeleeHitCheck then
-            originalMeleeHitCheck = MeleeBase.MeleeHitCheck
-        end
-        MeleeBase.MeleeHitCheck = unifiedMeleeHitCheck
-    end
-    hookInstalled = true
-end
-
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(1)
-    installHook()
-end)
-
-if LocalPlayer.Character then
-    task.wait(0.5)
-    installHook()
-end
-
 
 --------------------------------------------------
 -- HITBOX MANAGER
