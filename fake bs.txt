@@ -72,7 +72,7 @@ lockBox.Visible = false
 lockBox.Thickness = 2
 lockBox.Color = Color3.fromRGB(0, 255, 100)
 lockBox.Filled = false
-lockBox.Transparency = 0.9
+lockBox.Transparency = 0.7
 
 function L.isWallBetween(origin, targetPos, targetModel)
     if not L.customWallCheckEnabled then return false end
