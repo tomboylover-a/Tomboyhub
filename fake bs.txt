@@ -975,15 +975,6 @@ HitboxBox:AddToggle('HitboxToggle', {
 HitboxBox:AddToggle('HitboxVisualsToggle', {
     Text = 'Enable Hitbox Visuals',
     Default = true,
-    Callback = function(V
- L.zombieHitboxEnabled = Value
-        refreshZombieHitboxes()
-    end
-})
-
-HitboxBox:AddToggle('HitboxVisualsToggle', {
-    Text = 'Enable Hitbox Visuals',
-    Default = true,
     Callback = function(Value)
         L.zombieHitboxVisualsEnabled = Value
         updateAllZombieHitboxVisuals()
